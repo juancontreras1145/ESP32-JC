@@ -4,17 +4,12 @@ import time
 import lcd_api
 import i2c_lcd
 
-# Configuración I2C de tu LCD
+# LCD
 i2c = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
+lcd = i2c_lcd.I2cLcd(i2c, 39, 2, 16)
 
-# Dirección detectada antes
-I2C_ADDR = 39
-
-# Tamaño LCD
-lcd = i2c_lcd.I2cLcd(i2c, I2C_ADDR, 2, 16)
-
-# Sensor DHT11 en GPIO4
-sensor = dht.DHT11(Pin(4))
+# Sensor DHT22
+sensor = dht.DHT22(Pin(4))
 
 lcd.clear()
 lcd.putstr("Sensor listo")
@@ -43,6 +38,6 @@ while True:
 
         lcd.clear()
         lcd.putstr("Error sensor")
-        print("Error:", e)
+        print(e)
 
     time.sleep(3)
