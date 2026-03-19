@@ -1,6 +1,8 @@
-from machine import Pin, I2C
+from machine import Pin, I2C, RTC
 import dht
 import time
+import ntptime
+import os
 
 # =========================
 # LCD I2C
@@ -57,28 +59,109 @@ def lcd_print(line1="", line2=""):
         data(ord(c))
 
 # =========================
-# SENSOR DHT22
+# SENSOR
 # =========================
 sensor = dht.DHT22(Pin(4))
 
+# =========================
+# HORA NTP
+# =========================
+def sync_time_chile():
+    try:
+        ntptime.settime()
+        return True
+    except Exception as e:
+        print("Error NTP:", e)
+        return False
+
+def now_chile():
+    rtc = RTC()
+    y, m, d, wd, hh, mm, ss, sub = rtc.datetime()
+
+    # Ajuste simple Chile continental UTC-3
+    hh -= 3
+    if hh < 0:
+        hh += 24
+        d -= 1
+
+    return y, m, d, hh, mm, ss
+
+def fecha_hora_texto():
+    y, m, d, hh, mm, ss = now_chile()
+    fecha = "{:02d}/{:02d}".format(d, m)
+    hora = "{:02d}:{:02d}".format(hh, mm)
+    return fecha, hora
+
+# =========================
+# CSV
+# =========================
+CSV_FILE = "temperaturas.csv"
+
+def init_csv():
+    if CSV_FILE not in os.listdir():
+        with open(CSV_FILE, "w") as f:
+            f.write("fecha,hora,temp,hum\n")
+
+def guardar_registro(fecha, hora, temp, hum):
+    with open(CSV_FILE, "a") as f:
+        f.write("{},{},{},{}\n".format(fecha, hora, temp, hum))
+
+# =========================
+# CONTROL REGISTRO 10 MIN
+# =========================
+ultimo_minuto_guardado = -1
+
+def toca_guardar(minuto):
+    global ultimo_minuto_guardado
+
+    # guardar solo en 00,10,20,30,40,50
+    if minuto % 10 == 0 and minuto != ultimo_minuto_guardado:
+        ultimo_minuto_guardado = minuto
+        return True
+    return False
+
+# =========================
+# MAIN
+# =========================
 lcd_init()
-lcd_print("Probando DHT22", "Espera...")
+lcd_print("Iniciando...", "DHT22 logger")
+time.sleep(2)
+
+sync_ok = sync_time_chile()
+init_csv()
+
+if sync_ok:
+    fecha, hora = fecha_hora_texto()
+    lcd_print("Hora sincroniz.", "{} {}".format(fecha, hora))
+else:
+    lcd_print("Sin hora NTP", "seguira igual")
 time.sleep(2)
 
 while True:
     try:
         sensor.measure()
-
         temp = round(sensor.temperature(), 1)
         hum = round(sensor.humidity(), 1)
 
+        fecha, hora = fecha_hora_texto()
+        _, _, _, hh, mm, ss = now_chile()
+
+        # Pantalla normal
+        lcd_print("T:{}C H:{}%".format(temp, hum), "{} {}".format(fecha, hora))
+
         print("Temp:", temp)
         print("Hum:", hum)
+        print("Fecha:", fecha, "Hora:", hora)
 
-        lcd_print("Temp: {} C".format(temp), "Hum: {} %".format(hum))
+        # Guardado cada 10 minutos
+        if toca_guardar(mm):
+            guardar_registro(fecha, hora, temp, hum)
+            print("Guardado en CSV")
+            lcd_print("Guardado OK", "{} {}".format(fecha, hora))
+            time.sleep(2)
 
     except Exception as e:
         print("Error:", e)
         lcd_print("Error sensor", str(e)[:16])
 
-    time.sleep(3)
+    time.sleep(5)
