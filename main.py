@@ -1,97 +1,75 @@
 from machine import Pin, I2C
-import network
-import socket
 import time
-import dht
 
-# =====================
-# SENSOR
-# =====================
+I2C_SDA = 8
+I2C_SCL = 9
 
-sensor = dht.DHT11(Pin(4))
+# Inicializar I2C
+i2c = I2C(0, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=400000)
 
-# =====================
-# LCD I2C
-# =====================
-
-i2c = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
-
+print("Escaneando I2C...")
 devices = i2c.scan()
+print("Encontrados:", [hex(d) for d in devices])
 
-lcd_addr = None
-for d in devices:
-    if d in [0x27, 0x3F]:
-        lcd_addr = d
-        break
+if not devices:
+    raise Exception("No se detecto ningun dispositivo I2C")
 
-def lcd_print(line1, line2=""):
-    try:
-        i2c.writeto(lcd_addr, b'\x00')
-    except:
-        pass
+addr = devices[0]
 
-# =====================
-# WIFI
-# =====================
+# LCD simple
+class LCD:
+    def __init__(self, i2c, addr):
+        self.i2c = i2c
+        self.addr = addr
+        self.backlight = 0x08
+        self.init_lcd()
 
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
+    def write(self, data):
+        self.i2c.writeto(self.addr, bytes([data | self.backlight]))
 
-while not wlan.isconnected():
-    time.sleep(1)
+    def pulse(self, data):
+        self.write(data | 0x04)
+        time.sleep_us(1)
+        self.write(data & ~0x04)
+        time.sleep_us(50)
 
-ip = wlan.ifconfig()[0]
+    def send(self, data, rs):
+        high = data & 0xF0
+        low = (data << 4) & 0xF0
+        self.write(high | rs)
+        self.pulse(high | rs)
+        self.write(low | rs)
+        self.pulse(low | rs)
 
-print("IP:", ip)
+    def cmd(self, cmd):
+        self.send(cmd, 0)
 
-# =====================
-# SERVIDOR WEB
-# =====================
+    def data(self, data):
+        self.send(data, 1)
 
-addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+    def init_lcd(self):
+        time.sleep_ms(20)
+        self.cmd(0x33)
+        self.cmd(0x32)
+        self.cmd(0x28)
+        self.cmd(0x0C)
+        self.cmd(0x06)
+        self.cmd(0x01)
 
-server = socket.socket()
-server.bind(addr)
-server.listen(1)
+    def clear(self):
+        self.cmd(0x01)
 
-print("Servidor web activo")
+    def print(self, text):
+        for c in text:
+            self.data(ord(c))
 
-# =====================
-# LOOP
-# =====================
+lcd = LCD(i2c, addr)
+
+lcd.clear()
+lcd.print("Hola Camila")
+
+lcd.cmd(0xC0)  # segunda linea
+lcd.print("Te Quiero")
 
 while True:
-
-    sensor.measure()
-    temp = sensor.temperature()
-    hum = sensor.humidity()
-
-    print("Temp:", temp, "Hum:", hum)
-
-    try:
-        conn, addr = server.accept()
-        request = conn.recv(1024)
-
-        html = f"""
-        <html>
-        <head>
-        <title>ESP32 Sensor</title>
-        </head>
-        <body style="font-family:Arial">
-        <h1>ESP32 Monitor</h1>
-        <h2>Temperatura: {temp} C</h2>
-        <h2>Humedad: {hum} %</h2>
-        </body>
-        </html>
-        """
-
-        conn.send("HTTP/1.1 200 OK\n")
-        conn.send("Content-Type: text/html\n")
-        conn.send("Connection: close\n\n")
-        conn.sendall(html)
-        conn.close()
-
-    except:
-        pass
-
-    time.sleep(2)
+    time.sleep(1)
