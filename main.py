@@ -1,75 +1,57 @@
 from machine import Pin, I2C
 import time
 
-I2C_SDA = 8
-I2C_SCL = 9
+# Pines I2C
+SDA_PIN = 8
+SCL_PIN = 9
 
-# Inicializar I2C
-i2c = I2C(0, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=400000)
+i2c = I2C(0, sda=Pin(SDA_PIN), scl=Pin(SCL_PIN), freq=400000)
+addr = 39
 
-print("Escaneando I2C...")
-devices = i2c.scan()
-print("Encontrados:", [hex(d) for d in devices])
+def write_byte(val):
+    i2c.writeto(addr, bytes([val]))
 
-if not devices:
-    raise Exception("No se detecto ningun dispositivo I2C")
+def pulse(data):
+    write_byte(data | 0x04)
+    time.sleep_us(1)
+    write_byte(data & ~0x04)
+    time.sleep_us(50)
 
-addr = devices[0]
+def send(val, rs):
+    high = val & 0xF0
+    low = (val << 4) & 0xF0
 
-# LCD simple
-class LCD:
-    def __init__(self, i2c, addr):
-        self.i2c = i2c
-        self.addr = addr
-        self.backlight = 0x08
-        self.init_lcd()
+    write_byte(high | rs | 0x08)
+    pulse(high | rs | 0x08)
 
-    def write(self, data):
-        self.i2c.writeto(self.addr, bytes([data | self.backlight]))
+    write_byte(low | rs | 0x08)
+    pulse(low | rs | 0x08)
 
-    def pulse(self, data):
-        self.write(data | 0x04)
-        time.sleep_us(1)
-        self.write(data & ~0x04)
-        time.sleep_us(50)
+def cmd(c):
+    send(c, 0)
 
-    def send(self, data, rs):
-        high = data & 0xF0
-        low = (data << 4) & 0xF0
-        self.write(high | rs)
-        self.pulse(high | rs)
-        self.write(low | rs)
-        self.pulse(low | rs)
+def data(d):
+    send(d, 1)
 
-    def cmd(self, cmd):
-        self.send(cmd, 0)
+# inicializar LCD
+time.sleep_ms(20)
+cmd(0x33)
+cmd(0x32)
+cmd(0x28)
+cmd(0x0C)
+cmd(0x06)
+cmd(0x01)
+time.sleep_ms(5)
 
-    def data(self, data):
-        self.send(data, 1)
+# linea 1
+for c in "ESP32 OK":
+    data(ord(c))
 
-    def init_lcd(self):
-        time.sleep_ms(20)
-        self.cmd(0x33)
-        self.cmd(0x32)
-        self.cmd(0x28)
-        self.cmd(0x0C)
-        self.cmd(0x06)
-        self.cmd(0x01)
+# linea 2
+cmd(0xC0)
 
-    def clear(self):
-        self.cmd(0x01)
-
-    def print(self, text):
-        for c in text:
-            self.data(ord(c))
-
-lcd = LCD(i2c, addr)
-
-lcd.clear()
-lcd.print("Hola Camila")
-
-lcd.cmd(0xC0)  # segunda linea
-lcd.print("Te Quiero")
+for c in "LCD FUNCIONA":
+    data(ord(c))
 
 while True:
     time.sleep(1)
