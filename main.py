@@ -54,44 +54,23 @@ def lcd_clear():
 
 def lcd_print(line1="", line2=""):
     lcd_clear()
-
     for c in str(line1)[:16]:
         data(ord(c))
-
     cmd(0xC0)
-
     for c in str(line2)[:16]:
         data(ord(c))
 
 # =========================
-# WIFI INFO
+# WIFI
 # =========================
 
 wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
 
 def wifi_ip():
     if wlan.isconnected():
         return wlan.ifconfig()[0]
     return "Sin WiFi"
-
-def wifi_rssi():
-    try:
-        return wlan.status("rssi")
-    except:
-        return None
-
-def wifi_calidad():
-    rssi = wifi_rssi()
-    if rssi is None:
-        return "Sin dato"
-    if rssi >= -55:
-        return "Excelente"
-    elif rssi >= -67:
-        return "Buena"
-    elif rssi >= -75:
-        return "Regular"
-    else:
-        return "Debil"
 
 # =========================
 # HORA NTP
@@ -103,7 +82,6 @@ def obtener_fecha_hora_chile():
         rtc = RTC()
         y, m, d, wd, hh, mm, ss, sub = rtc.datetime()
 
-        # Ajuste Chile continental aprox UTC-3
         hh -= 3
         if hh < 0:
             hh += 24
@@ -122,23 +100,12 @@ lcd_init()
 
 fecha, hora = obtener_fecha_hora_chile()
 
-# Pantalla inicial de actualización
-lcd_print("Actualizado", "{} {}".format(fecha, hora))
-time.sleep(4)
-
 while True:
-    # Pantalla 1: IP
+    lcd_print("Actualizado", "{} {}".format(fecha, hora))
+    time.sleep(3)
+
     lcd_print("WiFi OK" if wlan.isconnected() else "Sin WiFi", wifi_ip())
     time.sleep(3)
 
-    # Pantalla 2: Calidad/RSSI
-    rssi = wifi_rssi()
-    if rssi is None:
-        lcd_print("Conexion", "Sin dato RSSI")
-    else:
-        lcd_print("WiFi: {}".format(wifi_calidad()), "RSSI: {} dBm".format(rssi))
-    time.sleep(3)
-
-    # Pantalla 3: Fecha/hora última sync
-    lcd_print("Actualizado", "{} {}".format(fecha, hora))
+    lcd_print("Camila Te Quie", "ro Mucho <3")
     time.sleep(3)
