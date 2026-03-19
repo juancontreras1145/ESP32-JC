@@ -68,8 +68,9 @@ time.sleep(2)
 while True:
     try:
         sensor.measure()
-        temp = sensor.temperature()
-        hum = sensor.humidity()
+
+        temp = round(sensor.temperature(), 1)
+        hum = round(sensor.humidity(), 1)
 
         print("Temp:", temp)
         print("Hum:", hum)
