@@ -1,6 +1,5 @@
-from machine import Pin, I2C, RTC
+from machine import Pin, I2C
 import time
-import ntptime
 import network
 
 # =========================
@@ -61,51 +60,71 @@ def lcd_print(line1="", line2=""):
         data(ord(c))
 
 # =========================
-# WIFI
+# WIFI SCAN
 # =========================
 
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
 
-def wifi_ip():
-    if wlan.isconnected():
-        return wlan.ifconfig()[0]
-    return "Sin WiFi"
-
-# =========================
-# HORA NTP
-# =========================
-
-def obtener_fecha_hora_chile():
+def limpiar_ssid(ssid_bytes):
     try:
-        ntptime.settime()
-        rtc = RTC()
-        y, m, d, wd, hh, mm, ss, sub = rtc.datetime()
+        ssid = ssid_bytes.decode("utf-8").strip()
+        if ssid == "":
+            return "<Oculta>"
+        return ssid
+    except:
+        return "<SSID?>"
 
-        hh -= 3
-        if hh < 0:
-            hh += 24
-            d -= 1
+def escanear_redes():
+    try:
+        redes = wlan.scan()
+        # scan devuelve:
+        # (ssid, bssid, channel, RSSI, security, hidden)
+        redes_limpias = []
 
-        return "{:02d}/{:02d}".format(d, m), "{:02d}:{:02d}".format(hh, mm)
+        for r in redes:
+            ssid = limpiar_ssid(r[0])
+            canal = r[2]
+            rssi = r[3]
+            redes_limpias.append((ssid, canal, rssi))
+
+        # ordenar por mejor señal
+        redes_limpias.sort(key=lambda x: x[2], reverse=True)
+        return redes_limpias
+
     except Exception as e:
-        print("Error NTP:", e)
-        return "Sin fecha", "Sin hora"
+        print("Error scan:", e)
+        return []
 
 # =========================
 # MAIN
 # =========================
 
 lcd_init()
-
-fecha, hora = obtener_fecha_hora_chile()
+lcd_print("Escaneando...", "WiFi cercanas")
+time.sleep(2)
 
 while True:
-    lcd_print("Actualizado", "{} {}".format(fecha, hora))
-    time.sleep(3)
+    redes = escanear_redes()
 
-    lcd_print("WiFi OK" if wlan.isconnected() else "Sin WiFi", wifi_ip())
-    time.sleep(3)
+    if not redes:
+        lcd_print("Sin redes", "detectadas")
+        time.sleep(3)
+        continue
 
-    lcd_print("Camila Te Quie", "ro Mucho <3")
-    time.sleep(3)
+    total = len(redes)
+
+    for i, red in enumerate(redes):
+        ssid, canal, rssi = red
+
+        # linea 1: nombre
+        linea1 = ssid[:16]
+
+        # linea 2: rssi y canal
+        linea2 = "{} {}dBm C{}".format(i + 1, rssi, canal)
+
+        lcd_print(linea1, linea2)
+
+        print("Red:", ssid, "RSSI:", rssi, "Canal:", canal)
+
+        time.sleep(3)
