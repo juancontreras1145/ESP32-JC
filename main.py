@@ -1,3 +1,4 @@
+VERSION = 1.0
 from machine import Pin, I2C
 import time
 import network
