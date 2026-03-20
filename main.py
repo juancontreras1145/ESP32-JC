@@ -1,21 +1,9 @@
-VERSION = "MONITOR OK 00:20"
-
 from machine import Pin, I2C
-import dht
 import time
-import network
-import socket
 
-# -------- WIFI --------
-SSID = "S25"
-PASSWORD = "12345678"
-
-# -------- LCD --------
+# ===== LCD =====
 LCD_ADDR = 39
-ROWS = 2
-COLS = 16
-
-i2c = I2C(0, scl=Pin(9), sda=Pin(8))
+i2c = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
 
 def write_byte(val):
     i2c.writeto(LCD_ADDR, bytes([val]))
@@ -62,98 +50,48 @@ def lcd_print(line1="", line2=""):
     for c in str(line2)[:16]:
         data(ord(c))
 
-# -------- SENSOR --------
-sensor = dht.DHT22(Pin(4))
-
-# -------- WIFI --------
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
+# ===== IR receptor =====
+IR_PIN = 15
+ir = Pin(IR_PIN, Pin.IN)
 
 lcd_init()
-lcd_print("Conectando WiFi", "")
+lcd_print("IR LISTO", "Esperando...")
 
-wlan.connect(SSID, PASSWORD)
+def capture_once(timeout_ms=5000, max_edges=180):
+    start = time.ticks_ms()
+    last = ir.value()
+    edges = []
 
-timeout = 15
+    while time.ticks_diff(time.ticks_ms(), start) < timeout_ms:
+        v = ir.value()
+        if v != last:
+            t = time.ticks_us()
+            edges.append((t, v))
+            last = v
+            if len(edges) >= max_edges:
+                break
 
-while not wlan.isconnected() and timeout > 0:
-    time.sleep(1)
-    timeout -= 1
+    if len(edges) < 2:
+        return []
 
-if wlan.isconnected():
-    ip = wlan.ifconfig()[0]
-else:
-    ip = "NO WIFI"
+    pulses = []
+    for i in range(1, len(edges)):
+        dt = time.ticks_diff(edges[i][0], edges[i-1][0])
+        pulses.append(dt)
 
-# -------- VERSION --------
-
-lcd_print("VERSION:", VERSION)
-time.sleep(3)
-
-# -------- WEB SERVER --------
-
-def webpage(temp, hum):
-    html = f"""
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ESP32 Monitor</title>
-    </head>
-
-    <body style="font-family:Arial;text-align:center">
-
-    <h1>ESP32 Monitor</h1>
-
-    <h2>Temperatura</h2>
-    <h3>{temp} °C</h3>
-
-    <h2>Humedad</h2>
-    <h3>{hum} %</h3>
-
-    <p>IP: {ip}</p>
-
-    <p>VERSION: {VERSION}</p>
-
-    </body>
-    </html>
-    """
-    return html
-
-addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
-server = socket.socket()
-server.bind(addr)
-server.listen(1)
-
-# -------- LOOP --------
+    return pulses
 
 while True:
+    lcd_print("Apunta control", "y presiona")
+    time.sleep(1)
 
-    try:
-        sensor.measure()
-        temp = sensor.temperature()
-        hum = sensor.humidity()
+    raw = capture_once()
 
-        lcd_print(
-            "T:{}C H:{}%".format(temp, hum),
-            "IP:" + ip
-        )
-
-    except:
-        temp = 0
-        hum = 0
-        lcd_print("Sensor error", "")
-
-    try:
-        conn, addr = server.accept()
-        request = conn.recv(1024)
-
-        response = webpage(temp, hum)
-
-        conn.send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
-        conn.send(response)
-        conn.close()
-
-    except:
-        pass
-
-    time.sleep(5)
+    if raw:
+        print("CAPTURADO:")
+        print(raw)
+        lcd_print("IR capturado", str(len(raw)) + " pulsos")
+        time.sleep(3)
+    else:
+        lcd_print("Sin senal", "reintenta")
+        time.sleep(2)
