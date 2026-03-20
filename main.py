@@ -649,7 +649,7 @@ import time
 ir = Pin(5, Pin.OUT)
 
 while True:
-    ir.on()
-    time.sleep(0.2)
-    ir.off()
-    time.sleep(0.2)
+    ir.value(1)
+    time.sleep(1)
+    ir.value(0)
+    time.sleep(1)
