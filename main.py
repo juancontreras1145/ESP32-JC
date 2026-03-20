@@ -7,6 +7,9 @@ import lcd
 import webserver
 
 lcd.init()
+lcd.print("VERSION", "GITHUB 1.3")
+
+lcd.init()
 lcd.print("Sistema", "Iniciando")
 
 sensor.init()
