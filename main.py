@@ -640,3 +640,16 @@ while True:
 
     gc.collect()
     time.sleep(1)
+
+# ===== TEST LED IR =====
+
+from machine import Pin
+import time
+
+ir = Pin(5, Pin.OUT)
+
+while True:
+    ir.on()
+    time.sleep(0.2)
+    ir.off()
+    time.sleep(0.2)
