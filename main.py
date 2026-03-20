@@ -21,8 +21,8 @@ lcd = I2cLcd(i2c, I2C_ADDR, ROWS, COLS)
 sensor = dht.DHT11(Pin(4))
 
 # -------- WIFI --------
-SSID = "TU_WIFI"
-PASSWORD = "TU_PASSWORD"
+SSID = "S25
+PASSWORD = "12345678"
 
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
