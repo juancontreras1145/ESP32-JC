@@ -1,10 +1,15 @@
 from machine import Pin
 import time
 
-ir = Pin(5, Pin.OUT)
+ir = Pin(15, Pin.IN)
+
+last = ir.value()
+
+print("Esperando señal IR...")
 
 while True:
-    ir.value(1)
-    time.sleep(1)
-    ir.value(0)
-    time.sleep(1)
+    v = ir.value()
+    
+    if v != last:
+        print(time.ticks_us(), v)
+        last = v
