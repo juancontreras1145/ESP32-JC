@@ -1,4 +1,5 @@
 VERSION = 1.0
+lcd_print("Version", VERSION)
 from machine import Pin, I2C
 import time
 import network
