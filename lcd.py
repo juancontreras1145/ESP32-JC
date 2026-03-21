@@ -2,74 +2,68 @@ from machine import I2C
 import time
 
 class LCD:
-
     def __init__(self, i2c, addr=0x27):
         self.i2c = i2c
         self.addr = addr
-
         self.backlight = 0x08
+        self._startup()
 
-        self.init_lcd()
-
-    def write_byte(self, data):
+    def _write(self, data):
         self.i2c.writeto(self.addr, bytes([data | self.backlight]))
 
-    def toggle_enable(self, data):
-        self.write_byte(data | 0x04)
+    def _pulse(self, data):
+        self._write(data | 0x04)
         time.sleep_us(1)
-        self.write_byte(data & ~0x04)
+        self._write(data & ~0x04)
         time.sleep_us(50)
 
-    def send(self, data, mode=0):
-        high = mode | (data & 0xF0)
-        low = mode | ((data << 4) & 0xF0)
+    def _send4(self, nibble, rs=0):
+        data = (nibble & 0xF0) | rs
+        self._write(data)
+        self._pulse(data)
 
-        self.write_byte(high)
-        self.toggle_enable(high)
-
-        self.write_byte(low)
-        self.toggle_enable(low)
+    def _send8(self, value, rs=0):
+        self._send4(value & 0xF0, rs)
+        self._send4((value << 4) & 0xF0, rs)
 
     def command(self, cmd):
-        self.send(cmd, 0)
+        self._send8(cmd, 0)
+        if cmd in (0x01, 0x02):
+            time.sleep_ms(2)
 
-    def write_char(self, char):
-        self.send(ord(char), 1)
+    def write_char(self, c):
+        self._send8(ord(c), 1)
 
-    def init_lcd(self):
-
+    def _startup(self):
         time.sleep_ms(50)
 
-        self.write_byte(0x30)
+        # secuencia robusta de arranque 4-bit
+        for _ in range(3):
+            self._send4(0x30)
+            time.sleep_ms(5)
+
+        self._send4(0x20)
         time.sleep_ms(5)
 
-        self.write_byte(0x30)
+        self.command(0x28)  # 4-bit, 2 líneas, 5x8
+        self.command(0x0C)  # display ON, cursor OFF
+        self.command(0x06)  # entry mode
+        self.command(0x01)  # clear
         time.sleep_ms(5)
 
-        self.write_byte(0x30)
-        time.sleep_ms(5)
-
-        self.write_byte(0x20)
-        time.sleep_ms(5)
-
-        self.command(0x28)
-        self.command(0x08)
-        self.command(0x01)
-        time.sleep_ms(2)
-        self.command(0x06)
-        self.command(0x0C)
+    def reinit(self):
+        self._startup()
 
     def clear(self):
         self.command(0x01)
-        time.sleep_ms(2)
+
+    def home(self):
+        self.command(0x02)
 
     def move_to(self, col, row):
+        addr = 0x80 + (0x40 * row) + col
+        self.command(addr)
 
-        addr = col + (0x40 * row)
-
-        self.command(0x80 | addr)
-
-    def putstr(self, string):
-
-        for char in string:
-            self.write_char(char)
+    def putstr(self, s):
+        for ch in s:
+            self.write_char(ch)
