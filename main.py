@@ -1,7 +1,7 @@
 # =========================================
-# ESP32 JC - Monitor Ambiental v42
-# Azul marino, hora Chile/Valparaíso,
-# LCD con apagado lógico real
+# ESP32 JC - Monitor Ambiental v50
+# Azul marino, hora Valparaiso, CSV limpio,
+# graficos, tendencias y panel mejorado
 # =========================================
 
 import time
@@ -15,8 +15,11 @@ import machine
 
 from machine import Pin, I2C
 
-VERSION = "Monitor Ambiental v42"
+VERSION = "Monitor Ambiental v50"
 
+# -----------------------------
+# CONFIG
+# -----------------------------
 LCD_SDA = 8
 LCD_SCL = 9
 LCD_ADDR = 0x27
@@ -42,9 +45,12 @@ HUM_ALTA = 70.0
 
 ROTACION_LCD_SEG = 2
 
-# Hora local Chile continental / Valparaíso
+# Hora local Valparaiso / Chile continental
 UTC_OFFSET_HORAS = -3
 
+# -----------------------------
+# ESTADO GLOBAL
+# -----------------------------
 inicio_epoch = time.time()
 ultimo_guardado = 0
 ultima_lectura_epoch = None
@@ -53,6 +59,9 @@ indice_lcd = 0
 
 temperatura_actual = None
 humedad_actual = None
+
+temperatura_prev = None
+humedad_prev = None
 
 sensor_ok = False
 sensor_error = "Sin lectura"
@@ -79,13 +88,17 @@ sensor = None
 lcd = None
 server = None
 
-
+# -----------------------------
+# HELPERS
+# -----------------------------
 def ahora_epoch():
     try:
         return int(time.time())
     except:
         return 0
 
+def epoch_local():
+    return ahora_epoch() + (UTC_OFFSET_HORAS * 3600)
 
 def texto_seguro(x, n=16):
     try:
@@ -93,13 +106,11 @@ def texto_seguro(x, n=16):
     except:
         return "?"
 
-
 def existe_archivo(nombre):
     try:
         return nombre in os.listdir()
     except:
         return False
-
 
 def memoria_libre():
     try:
@@ -108,7 +119,6 @@ def memoria_libre():
     except:
         return -1
 
-
 def uptime_texto():
     seg = max(0, int(time.time() - inicio_epoch))
     h = seg // 3600
@@ -116,41 +126,35 @@ def uptime_texto():
     s = seg % 60
     return "{:02d}:{:02d}:{:02d}".format(h, m, s)
 
-
 def fmt1(x):
     if x is None:
         return "--.-"
     return "{:.1f}".format(x)
 
-
 def estado_sensor():
     return "OK" if sensor_ok else "ERROR"
-
 
 def estado_wifi():
     return "Conectado" if wifi_conectado() else "Sin WiFi"
 
-
-def epoch_local():
-    return ahora_epoch() + (UTC_OFFSET_HORAS * 3600)
-
-
-def hora_actual_texto():
+def fecha_hora_local():
     try:
         t = time.localtime(epoch_local())
-        return "{:02d}:{:02d}:{:02d}".format(t[3], t[4], t[5])
+        fecha = "{:04d}-{:02d}-{:02d}".format(t[0], t[1], t[2])
+        hora = "{:02d}:{:02d}:{:02d}".format(t[3], t[4], t[5])
+        return fecha, hora
     except:
-        return "--:--:--"
-
+        return "----/--/--", "--:--:--"
 
 def fecha_actual_texto():
-    try:
-        t = time.localtime(epoch_local())
-        return "{:04d}-{:02d}-{:02d}".format(t[0], t[1], t[2])
-    except:
-        return "----/--/--"
+    return fecha_hora_local()[0]
 
+def hora_actual_texto():
+    return fecha_hora_local()[1]
 
+# -----------------------------
+# LCD
+# -----------------------------
 def init_lcd():
     global lcd, lcd_ok, lcd_error
     try:
@@ -174,14 +178,12 @@ def init_lcd():
         lcd_ok = True
         lcd_error = "Ninguno"
         return True
-
     except Exception as e:
         lcd = None
         lcd_ok = False
         lcd_error = str(e)
         print("LCD init error:", e)
         return False
-
 
 def lcd_apagar_total():
     global lcd_activo
@@ -196,7 +198,6 @@ def lcd_apagar_total():
     except:
         pass
 
-
 def lcd_encender_total():
     global lcd_activo
     lcd_activo = True
@@ -206,7 +207,6 @@ def lcd_encender_total():
             lcd.backlight_on()
     except:
         pass
-
 
 def lcd_escribir(linea1="", linea2=""):
     global lcd_ok, lcd_error, contador_errores_lcd
@@ -235,7 +235,6 @@ def lcd_escribir(linea1="", linea2=""):
         print("LCD write error:", e)
         return False
 
-
 def lcd_msg(linea1="", linea2="", pausa=0):
     if not lcd_activo:
         return
@@ -250,13 +249,14 @@ def lcd_msg(linea1="", linea2="", pausa=0):
     if pausa > 0:
         time.sleep(pausa)
 
-
+# -----------------------------
+# WIFI
+# -----------------------------
 def wifi_conectado():
     try:
         return network.WLAN(network.STA_IF).isconnected()
     except:
         return False
-
 
 def refrescar_ip():
     global wifi_ip
@@ -269,7 +269,6 @@ def refrescar_ip():
     except:
         wifi_ip = "Sin WiFi"
 
-
 def wifi_rssi():
     try:
         wlan = network.WLAN(network.STA_IF)
@@ -279,7 +278,9 @@ def wifi_rssi():
         pass
     return None
 
-
+# -----------------------------
+# SENSOR
+# -----------------------------
 def init_sensor():
     global sensor
     try:
@@ -290,9 +291,9 @@ def init_sensor():
         sensor = None
         return False
 
-
 def leer_sensor():
     global temperatura_actual, humedad_actual, ultima_lectura_epoch
+    global temperatura_prev, humedad_prev
     global sensor_ok, sensor_error, contador_lecturas, contador_errores_sensor
 
     if sensor is None:
@@ -314,6 +315,9 @@ def leer_sensor():
             if h > 100:
                 h = 100.0
 
+            temperatura_prev = temperatura_actual
+            humedad_prev = humedad_actual
+
             temperatura_actual = t
             humedad_actual = h
             ultima_lectura_epoch = epoch_local()
@@ -332,7 +336,9 @@ def leer_sensor():
 
     return False
 
-
+# -----------------------------
+# CALCULOS
+# -----------------------------
 def punto_rocio(temp, hum):
     try:
         if temp is None or hum is None or hum <= 0:
@@ -345,7 +351,6 @@ def punto_rocio(temp, hum):
     except:
         return None
 
-
 def sensacion_ambiente(temp, hum):
     if temp is None or hum is None:
         return "Sin datos"
@@ -354,7 +359,6 @@ def sensacion_ambiente(temp, hum):
     if 18 <= temp <= 27 and 35 <= hum <= 70:
         return "Regular"
     return "Malo"
-
 
 def lista_alertas(temp, hum):
     alertas = []
@@ -374,13 +378,12 @@ def lista_alertas(temp, hum):
 
     dp = punto_rocio(temp, hum)
     if dp is not None and dp > 16:
-        alertas.append("Riesgo de condensación")
+        alertas.append("Riesgo de condensacion")
 
     if not alertas:
         alertas.append("Ninguna")
 
     return alertas
-
 
 def estado_resfriado(temp, hum):
     if temp is None or hum is None:
@@ -391,7 +394,6 @@ def estado_resfriado(temp, hum):
         return "Aceptable"
     return "Poco favorable"
 
-
 def semaforo_ambiente():
     estado = sensacion_ambiente(temperatura_actual, humedad_actual)
     if estado == "Bueno":
@@ -400,15 +402,32 @@ def semaforo_ambiente():
         return "🟡"
     return "🔴"
 
+def tendencia(valor_actual, valor_prev):
+    if valor_actual is None or valor_prev is None:
+        return "Sin referencia"
+    dif = round(valor_actual - valor_prev, 2)
+    if dif > 0.2:
+        return "Sube"
+    if dif < -0.2:
+        return "Baja"
+    return "Estable"
 
+def tendencia_temp():
+    return tendencia(temperatura_actual, temperatura_prev)
+
+def tendencia_hum():
+    return tendencia(humedad_actual, humedad_prev)
+
+# -----------------------------
+# CSV
+# -----------------------------
 def asegurar_csv():
     try:
         if not existe_archivo(CSV_FILE):
             with open(CSV_FILE, "w") as f:
-                f.write("epoch_local,temperatura,humedad,punto_rocio,confort,resfriado\n")
+                f.write("fecha,hora,epoch_local,temperatura,humedad,punto_rocio,confort,resfriado,tendencia_temp,tendencia_hum\n")
     except Exception as e:
         print("CSV init error:", e)
-
 
 def guardar_csv(temp, hum):
     global contador_guardados
@@ -417,18 +436,25 @@ def guardar_csv(temp, hum):
         return False
 
     try:
+        fecha, hora = fecha_hora_local()
         dp = punto_rocio(temp, hum)
         confort = sensacion_ambiente(temp, hum)
         resf = estado_resfriado(temp, hum)
+        ttemp = tendencia_temp()
+        thum = tendencia_hum()
 
         with open(CSV_FILE, "a") as f:
-            f.write("{},{:.1f},{:.1f},{},{},{}\n".format(
+            f.write("{},{},{},{:.1f},{:.1f},{},{},{},{},{}\n".format(
+                fecha,
+                hora,
                 epoch_local(),
                 temp,
                 hum,
                 "" if dp is None else "{:.1f}".format(dp),
                 confort,
-                resf
+                resf,
+                ttemp,
+                thum
             ))
 
         contador_guardados += 1
@@ -438,14 +464,12 @@ def guardar_csv(temp, hum):
         print("CSV save error:", e)
         return False
 
-
 def leer_csv_texto():
     try:
         with open(CSV_FILE, "r") as f:
             return f.read()
     except Exception as e:
         return "Error leyendo CSV: {}".format(e)
-
 
 def borrar_csv():
     try:
@@ -456,6 +480,34 @@ def borrar_csv():
     except Exception as e:
         return False, str(e)
 
+def leer_datos_csv():
+    datos = []
+    try:
+        with open(CSV_FILE, "r") as f:
+            lineas = f.readlines()[1:]
+
+        for linea in lineas:
+            partes = linea.strip().split(",")
+            if len(partes) < 10:
+                continue
+            try:
+                datos.append({
+                    "fecha": partes[0],
+                    "hora": partes[1],
+                    "epoch": int(partes[2]),
+                    "temp": float(partes[3]),
+                    "hum": float(partes[4]),
+                    "rocio": None if partes[5] == "" else float(partes[5]),
+                    "confort": partes[6],
+                    "resfriado": partes[7],
+                    "ttemp": partes[8],
+                    "thum": partes[9],
+                })
+            except:
+                pass
+    except:
+        pass
+    return datos
 
 def estadisticas():
     datos = {
@@ -464,38 +516,71 @@ def estadisticas():
         "hmin": None, "hmax": None, "havg": None,
     }
 
-    try:
-        with open(CSV_FILE, "r") as f:
-            lineas = f.readlines()
+    filas = leer_datos_csv()
+    if not filas:
+        return datos
 
-        temps = []
-        hums = []
+    temps = [x["temp"] for x in filas]
+    hums = [x["hum"] for x in filas]
 
-        for linea in lineas[1:]:
-            partes = linea.strip().split(",")
-            if len(partes) < 3:
-                continue
-            try:
-                temps.append(float(partes[1]))
-                hums.append(float(partes[2]))
-            except:
-                pass
-
-        if temps and hums:
-            datos["count"] = len(temps)
-            datos["tmin"] = min(temps)
-            datos["tmax"] = max(temps)
-            datos["tavg"] = sum(temps) / len(temps)
-            datos["hmin"] = min(hums)
-            datos["hmax"] = max(hums)
-            datos["havg"] = sum(hums) / len(hums)
-
-    except Exception as e:
-        print("Stats error:", e)
+    datos["count"] = len(temps)
+    datos["tmin"] = min(temps)
+    datos["tmax"] = max(temps)
+    datos["tavg"] = sum(temps) / len(temps)
+    datos["hmin"] = min(hums)
+    datos["hmax"] = max(hums)
+    datos["havg"] = sum(hums) / len(hums)
 
     return datos
 
+# -----------------------------
+# GRAFICOS SVG
+# -----------------------------
+def generar_svg_serie(valores, titulo="Serie", color="#7fb3ff", alto=180, ancho=800):
+    if not valores:
+        return "<div class='mono'>Sin datos para gráfico</div>"
 
+    vals = valores[-30:]
+    if len(vals) < 2:
+        vals = vals + vals
+
+    vmin = min(vals)
+    vmax = max(vals)
+    if vmax == vmin:
+        vmax += 1
+
+    puntos = []
+    for i, v in enumerate(vals):
+        x = int(i * (ancho - 40) / (len(vals) - 1)) + 20
+        y = int((alto - 40) - ((v - vmin) / (vmax - vmin)) * (alto - 80)) + 20
+        puntos.append("{},{}".format(x, y))
+
+    poly = " ".join(puntos)
+
+    return """
+    <div class="card">
+        <div class="title" style="font-size:20px;">{titulo}</div>
+        <svg width="100%" viewBox="0 0 {ancho} {alto}" preserveAspectRatio="none">
+            <rect x="0" y="0" width="{ancho}" height="{alto}" fill="#07101d" rx="14"/>
+            <polyline fill="none" stroke="{color}" stroke-width="4" points="{poly}" />
+            <text x="20" y="20" fill="#b7c8e6" font-size="14">Min: {vmin}</text>
+            <text x="{tx}" y="20" fill="#b7c8e6" font-size="14">Max: {vmax}</text>
+        </svg>
+    </div>
+    """.format(
+        titulo=titulo,
+        ancho=ancho,
+        alto=alto,
+        color=color,
+        poly=poly,
+        vmin=round(vmin, 1),
+        vmax=round(vmax, 1),
+        tx=ancho - 140
+    )
+
+# -----------------------------
+# LCD ROTATIVO
+# -----------------------------
 def actualizar_lcd_principal(forzar=False):
     global ultimo_cambio_lcd, indice_lcd
 
@@ -523,7 +608,7 @@ def actualizar_lcd_principal(forzar=False):
          texto_seguro(alerta, 16)),
         ("Resfriado:",
          texto_seguro(estado_resfriado(temperatura_actual, humedad_actual), 16)),
-        ("WiFi:{}".format("OK" if wifi_conectado() else "OFF"),
+        ("T:{} H:{}".format(texto_seguro(tendencia_temp(), 6), texto_seguro(tendencia_hum(), 6)),
          texto_seguro(wifi_ip, 16)),
     ]
 
@@ -537,7 +622,9 @@ def actualizar_lcd_principal(forzar=False):
     if indice_lcd >= len(pantallas):
         indice_lcd = 0
 
-
+# -----------------------------
+# WEB ESTILO
+# -----------------------------
 def estilo_base():
     return """
     <style>
@@ -643,9 +730,12 @@ def estilo_base():
     </style>
     """
 
-
+# -----------------------------
+# WEB PAGINAS
+# -----------------------------
 def html_inicio():
     est = estadisticas()
+    filas = leer_datos_csv()
     alertas = lista_alertas(temperatura_actual, humedad_actual)
     dp = punto_rocio(temperatura_actual, humedad_actual)
     confort = sensacion_ambiente(temperatura_actual, humedad_actual)
@@ -657,6 +747,12 @@ def html_inicio():
         else '<div class="pill okpill">{}</div>'.format(a)
         for a in alertas
     )
+
+    temps = [x["temp"] for x in filas]
+    hums = [x["hum"] for x in filas]
+
+    graf_temp = generar_svg_serie(temps, "Grafico temperatura (ultimos registros)", "#79afff")
+    graf_hum = generar_svg_serie(hums, "Grafico humedad (ultimos registros)", "#68d2ff")
 
     return """<!DOCTYPE html>
 <html lang="es">
@@ -671,7 +767,7 @@ def html_inicio():
 <div class="wrap">
 
     <div class="card">
-        <div class="title">ESP32 JC Monitor v42</div>
+        <div class="title">ESP32 JC Monitor v50</div>
         <div class="sub">IP: {ip}</div>
         <div class="sub">Fecha: {fecha}</div>
         <div class="sub">Hora: {hora}</div>
@@ -680,17 +776,19 @@ def html_inicio():
         <div class="sub">WiFi: <span class="{wifi_class}">{wifi_state}</span></div>
         <div class="sub">RSSI: {rssi}</div>
         <div class="sub">Último error sensor: {sensor_error}</div>
-        <div class="sub">Última lectura epoch local: {ultima}</div>
+        <div class="sub">Última lectura local: {ultima}</div>
     </div>
 
     <div class="grid">
         <div class="card">
             <div class="sub">Temperatura actual</div>
             <div class="big">{temp} °C</div>
+            <div class="sub">Tendencia: {ttemp}</div>
         </div>
         <div class="card">
             <div class="sub">Humedad actual</div>
             <div class="big">{hum} %</div>
+            <div class="sub">Tendencia: {thum}</div>
         </div>
     </div>
 
@@ -728,6 +826,9 @@ def html_inicio():
         <div class="sub" style="margin-top:10px;">Registros guardados: {count}</div>
     </div>
 
+    {graf_temp}
+    {graf_hum}
+
     <div class="card">
         <div class="title" style="font-size:22px;">Acceso rápido</div>
         <a class="btn" href="/acciones">Ir a acciones</a>
@@ -754,6 +855,8 @@ def html_inicio():
         ultima=ultima_lectura_epoch,
         temp=fmt1(temperatura_actual),
         hum=fmt1(humedad_actual),
+        ttemp=tendencia_temp(),
+        thum=tendencia_hum(),
         semaforo=semaforo_ambiente(),
         confort=confort,
         dp=fmt1(dp),
@@ -766,8 +869,9 @@ def html_inicio():
         hmax=fmt1(est["hmax"]),
         havg=fmt1(est["havg"]),
         count=est["count"],
+        graf_temp=graf_temp,
+        graf_hum=graf_hum
     )
-
 
 def html_acciones():
     return """<!DOCTYPE html>
@@ -798,7 +902,6 @@ def html_acciones():
         style=estilo_base(),
         texto_log="Desactivar guardado" if guardado_activo else "Activar guardado"
     )
-
 
 def html_estado():
     return """<!DOCTYPE html>
@@ -831,7 +934,7 @@ def html_estado():
         <div class="mono">Errores sensor: {es}</div>
         <div class="mono">Errores LCD: {el}</div>
         <div class="mono">Errores web: {ew}</div>
-        <div class="mono">Última lectura epoch local: {ultima}</div>
+        <div class="mono">Última lectura local: {ultima}</div>
         <div class="mono">CSV: {csv}</div>
         <div class="mono">Guardado activo: {log_activo}</div>
         <div class="mono">LCD activo: {lcd_activo}</div>
@@ -866,7 +969,6 @@ def html_estado():
         lcd_activo=lcd_activo
     )
 
-
 def json_estado():
     dp = punto_rocio(temperatura_actual, humedad_actual)
     confort = sensacion_ambiente(temperatura_actual, humedad_actual)
@@ -883,11 +985,13 @@ def json_estado():
   "punto_rocio": "{dp}",
   "confort": "{confort}",
   "resfriado": "{resfriado}",
+  "tendencia_temp": "{ttemp}",
+  "tendencia_hum": "{thum}",
   "sensor_ok": {sensor_ok},
   "wifi_ok": {wifi_ok},
   "rssi": "{rssi}",
   "uptime": "{uptime}",
-  "ultima_lectura_epoch_local": "{ultima}"
+  "ultima_lectura_local": "{ultima}"
 }}""".format(
         version=VERSION,
         ip=wifi_ip,
@@ -898,6 +1002,8 @@ def json_estado():
         dp=fmt1(dp),
         confort=confort,
         resfriado=resf,
+        ttemp=tendencia_temp(),
+        thum=tendencia_hum(),
         sensor_ok="true" if sensor_ok else "false",
         wifi_ok="true" if wifi_conectado() else "false",
         rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
@@ -905,7 +1011,9 @@ def json_estado():
         ultima=ultima_lectura_epoch
     )
 
-
+# -----------------------------
+# RESPUESTA HTTP
+# -----------------------------
 def responder(cl, body, ctype="text/html; charset=utf-8", code="200 OK", extras=None):
     try:
         cl.send("HTTP/1.0 {}\r\n".format(code))
@@ -918,7 +1026,9 @@ def responder(cl, body, ctype="text/html; charset=utf-8", code="200 OK", extras=
     except Exception as e:
         print("send_response error:", e)
 
-
+# -----------------------------
+# SERVER
+# -----------------------------
 def init_server():
     global server, server_ok, server_error
     try:
@@ -938,7 +1048,6 @@ def init_server():
         server_error = str(e)
         print("Server init error:", e)
         return False
-
 
 def manejar_web():
     global contador_hits, server_ok, server_error, contador_errores_web
@@ -1037,7 +1146,9 @@ def manejar_web():
     except:
         pass
 
-
+# -----------------------------
+# ARRANQUE
+# -----------------------------
 gc.collect()
 
 init_lcd()
@@ -1058,6 +1169,9 @@ else:
 
 ultimo_guardado = ahora_epoch()
 
+# -----------------------------
+# LOOP
+# -----------------------------
 while True:
     try:
         gc.collect()
