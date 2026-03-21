@@ -12,7 +12,7 @@ SCL = 9
 LCD_ADDR = 0x27
 
 # SENSOR
-sensor = dht.DHT22(Pin(6))
+sensor = dht.DHT22(Pin(4))
 
 # ==============================
 # LCD
