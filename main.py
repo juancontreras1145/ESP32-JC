@@ -1,21 +1,23 @@
 # =========================================
-# ESP32 JC - Monitor Ambiental v40
-# Diseño negro + verde, todo en español
+# ESP32 JC - Monitor Ambiental v41
+# Negro + verde, todo en español
 # =========================================
 # Hardware:
-# - LCD I2C 1602 -> SDA=8, SCL=9, ADDR=0x27
-# - DHT22 -> GPIO4
+# LCD I2C 1602 -> SDA=8, SCL=9, ADDR=0x27
+# DHT22 -> GPIO4
 #
-# Rutas web:
-#   /               Panel principal
-#   /estado         Estado técnico
-#   /leer           Fuerza lectura manual
-#   /descargar      Descarga CSV
-#   /borrar_csv     Borra CSV
-#   /toggle_log     Activa/desactiva guardado
-#   /lcd_on         Activa LCD
-#   /lcd_off        Desactiva LCD
-#   /reiniciar      Reinicia ESP32
+# Rutas:
+# /              Panel principal
+# /estado        Estado técnico
+# /acciones      Panel de acciones
+# /leer          Fuerza lectura
+# /descargar     Descarga CSV
+# /borrar_csv    Reinicia CSV
+# /toggle_log    Activa/desactiva guardado
+# /lcd_on        Enciende LCD
+# /lcd_off       Apaga LCD
+# /json          Estado en JSON
+# /reiniciar     Reinicia ESP32
 # =========================================
 
 import time
@@ -30,40 +32,34 @@ import machine
 from machine import Pin, I2C
 
 # =========================================
-# CONFIGURACION
+# CONFIGURACIÓN
 # =========================================
-VERSION = "Monitor Ambiental v40"
+VERSION = "Monitor Ambiental v41"
 
-# LCD
 LCD_SDA = 8
 LCD_SCL = 9
 LCD_ADDR = 0x27
 
-# Sensor
 DHT_PIN = 4
-
-# Archivo CSV
 CSV_FILE = "temperaturas.csv"
 
-# Intervalos
 INTERVALO_GUARDADO = 600
 TIMEOUT_WEB = 1
 REFRESCO_WEB = 10
 PAUSA_LCD_BOOT = 1.5
 
-# Reintentos sensor
 REINTENTOS_SENSOR = 3
 DELAY_REINTENTO_SENSOR = 1
 
-# Calibración
 TEMP_OFFSET = 0.0
 HUM_OFFSET = 0.0
 
-# Límites
 TEMP_BAJA = 18.0
 TEMP_ALTA = 28.0
 HUM_BAJA = 40.0
 HUM_ALTA = 70.0
+
+ROTACION_LCD_SEG = 2
 
 # =========================================
 # ESTADO GLOBAL
@@ -71,6 +67,8 @@ HUM_ALTA = 70.0
 inicio_epoch = time.time()
 ultimo_guardado = 0
 ultima_lectura_epoch = None
+ultimo_cambio_lcd = 0
+indice_lcd = 0
 
 temperatura_actual = None
 humedad_actual = None
@@ -146,6 +144,20 @@ def estado_sensor():
 def estado_wifi():
     return "Conectado" if wifi_conectado() else "Sin WiFi"
 
+def hora_actual_texto():
+    try:
+        t = time.localtime()
+        return "{:02d}:{:02d}:{:02d}".format(t[3], t[4], t[5])
+    except:
+        return "--:--:--"
+
+def fecha_actual_texto():
+    try:
+        t = time.localtime()
+        return "{:04d}-{:02d}-{:02d}".format(t[0], t[1], t[2])
+    except:
+        return "----/--/--"
+
 # =========================================
 # LCD
 # =========================================
@@ -161,6 +173,10 @@ def init_lcd():
             pass
         time.sleep_ms(150)
         lcd.clear()
+        try:
+            lcd.backlight_on()
+        except:
+            pass
         lcd_ok = True
         lcd_error = "Ninguno"
         return True
@@ -190,7 +206,6 @@ def lcd_escribir(linea1="", linea2=""):
         lcd_ok = True
         lcd_error = "Ninguno"
         return True
-
     except Exception as e:
         contador_errores_lcd += 1
         lcd_ok = False
@@ -293,7 +308,7 @@ def leer_sensor():
     return False
 
 # =========================================
-# CALCULOS AMBIENTALES
+# CÁLCULOS AMBIENTALES
 # =========================================
 def punto_rocio(temp, hum):
     try:
@@ -310,20 +325,11 @@ def punto_rocio(temp, hum):
 def sensacion_ambiente(temp, hum):
     if temp is None or hum is None:
         return "Sin datos"
-
     if 20 <= temp <= 24 and 40 <= hum <= 60:
         return "Bueno"
     if 18 <= temp <= 27 and 35 <= hum <= 70:
         return "Regular"
     return "Malo"
-
-def color_confort():
-    estado = sensacion_ambiente(temperatura_actual, humedad_actual)
-    if estado == "Bueno":
-        return "verde"
-    if estado == "Regular":
-        return "amarillo"
-    return "rojo"
 
 def lista_alertas(temp, hum):
     alertas = []
@@ -353,7 +359,6 @@ def lista_alertas(temp, hum):
 def estado_resfriado(temp, hum):
     if temp is None or hum is None:
         return "Sin datos"
-
     if 20 <= temp <= 22 and 45 <= hum <= 60:
         return "Muy bueno"
     if 19 <= temp <= 24 and 40 <= hum <= 70:
@@ -462,7 +467,55 @@ def estadisticas():
     return datos
 
 # =========================================
-# WEB - HTML
+# LCD PANEL ROTATIVO
+# =========================================
+def actualizar_lcd_principal(forzar=False):
+    global ultimo_cambio_lcd, indice_lcd
+
+    if not lcd_activo:
+        return
+
+    ahora = ahora_epoch()
+
+    if not forzar and (ahora - ultimo_cambio_lcd < ROTACION_LCD_SEG):
+        return
+
+    ultimo_cambio_lcd = ahora
+
+    confort = sensacion_ambiente(temperatura_actual, humedad_actual)
+    dp = punto_rocio(temperatura_actual, humedad_actual)
+    alerta = lista_alertas(temperatura_actual, humedad_actual)[0]
+    hora = hora_actual_texto()
+
+    pantallas = [
+        ("T:{}C H:{}%".format(fmt1(temperatura_actual), fmt1(humedad_actual)),
+         "Conf:{}".format(texto_seguro(confort, 10))),
+
+        ("Rocio:{}C".format(fmt1(dp)),
+         "Hora:{}".format(hora)),
+
+        ("Alerta:",
+         texto_seguro(alerta, 16)),
+
+        ("Resfriado:",
+         texto_seguro(estado_resfriado(temperatura_actual, humedad_actual), 16)),
+
+        ("WiFi:{}".format("OK" if wifi_conectado() else "OFF"),
+         texto_seguro(wifi_ip, 16)),
+    ]
+
+    if indice_lcd >= len(pantallas):
+        indice_lcd = 0
+
+    p = pantallas[indice_lcd]
+    lcd_escribir(p[0], p[1])
+
+    indice_lcd += 1
+    if indice_lcd >= len(pantallas):
+        indice_lcd = 0
+
+# =========================================
+# WEB - ESTILO
 # =========================================
 def estilo_base():
     return """
@@ -538,7 +591,7 @@ def estilo_base():
     }
     .mono {
         font-family: monospace;
-        background: #020602;
+        background: #020617;
         padding: 10px;
         border-radius: 10px;
     }
@@ -558,10 +611,9 @@ def estilo_base():
         background: #103b10;
         color: #bfffbf;
     }
-    .sem_ok { color: #4dff88; }
-    .sem_mid { color: #ffe066; }
-    .sem_bad { color: #ff6666; }
-    a.inline { color: #7dff9b; }
+    a.inline {
+        color: #7dff9b;
+    }
     @media (max-width: 700px) {
         .grid, .grid3 {
             grid-template-columns: 1fr;
@@ -570,6 +622,9 @@ def estilo_base():
     </style>
     """
 
+# =========================================
+# WEB - PÁGINAS
+# =========================================
 def html_inicio():
     est = estadisticas()
     alertas = lista_alertas(temperatura_actual, humedad_actual)
@@ -590,20 +645,23 @@ def html_inicio():
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="{refresh}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32 JC Monitor v40</title>
+<title>ESP32 JC Monitor</title>
 {style}
 </head>
 <body>
 <div class="wrap">
 
     <div class="card">
-        <div class="title">ESP32 JC Monitor v40</div>
+        <div class="title">ESP32 JC Monitor v41</div>
         <div class="sub">IP: {ip}</div>
+        <div class="sub">Fecha: {fecha}</div>
+        <div class="sub">Hora: {hora}</div>
         <div class="sub">Uptime: {uptime}</div>
         <div class="sub">Sensor: <span class="{sensor_class}">{sensor_state}</span></div>
         <div class="sub">WiFi: <span class="{wifi_class}">{wifi_state}</span></div>
         <div class="sub">RSSI: {rssi}</div>
         <div class="sub">Último error sensor: {sensor_error}</div>
+        <div class="sub">Última lectura epoch: {ultima}</div>
     </div>
 
     <div class="grid">
@@ -652,15 +710,10 @@ def html_inicio():
     </div>
 
     <div class="card">
-        <div class="title" style="font-size:22px;">Acciones</div>
-        <a class="btn" href="/leer">Forzar lectura</a>
-        <a class="btn" href="/descargar">Descargar CSV</a>
-        <a class="btn btn2" href="/borrar_csv">Borrar CSV</a>
-        <a class="btn btn2" href="/toggle_log">{texto_log}</a>
-        <a class="btn btn2" href="/lcd_on">LCD ON</a>
-        <a class="btn btn2" href="/lcd_off">LCD OFF</a>
+        <div class="title" style="font-size:22px;">Acceso rápido</div>
+        <a class="btn" href="/acciones">Ir a acciones</a>
         <a class="btn btn2" href="/estado">Estado técnico</a>
-        <a class="btn btn2" href="/reiniciar">Reiniciar ESP32</a>
+        <a class="btn btn2" href="/json">JSON</a>
     </div>
 
 </div>
@@ -670,6 +723,8 @@ def html_inicio():
         refresh=REFRESCO_WEB,
         style=estilo_base(),
         ip=wifi_ip,
+        fecha=fecha_actual_texto(),
+        hora=hora_actual_texto(),
         uptime=uptime_texto(),
         sensor_class="ok" if sensor_ok else "bad",
         sensor_state=estado_sensor(),
@@ -677,6 +732,7 @@ def html_inicio():
         wifi_state=estado_wifi(),
         rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
         sensor_error=sensor_error,
+        ultima=ultima_lectura_epoch,
         temp=fmt1(temperatura_actual),
         hum=fmt1(humedad_actual),
         semaforo=semaforo_ambiente(),
@@ -691,6 +747,35 @@ def html_inicio():
         hmax=fmt1(est["hmax"]),
         havg=fmt1(est["havg"]),
         count=est["count"],
+    )
+
+def html_acciones():
+    return """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acciones</title>
+{style}
+</head>
+<body>
+<div class="wrap">
+    <div class="card">
+        <div class="title">Acciones</div>
+        <a class="btn" href="/leer">Forzar lectura</a>
+        <a class="btn" href="/descargar">Descargar CSV</a>
+        <a class="btn btn2" href="/borrar_csv">Borrar CSV</a>
+        <a class="btn btn2" href="/toggle_log">{texto_log}</a>
+        <a class="btn btn2" href="/lcd_on">LCD ON</a>
+        <a class="btn btn2" href="/lcd_off">LCD OFF</a>
+        <a class="btn btn2" href="/reiniciar">Reiniciar ESP32</a>
+        <p><a class="inline" href="/">Volver</a></p>
+    </div>
+</div>
+</body>
+</html>
+""".format(
+        style=estilo_base(),
         texto_log="Desactivar guardado" if guardado_activo else "Activar guardado"
     )
 
@@ -756,8 +841,42 @@ def html_estado():
         lcd_activo=lcd_activo
     )
 
+def json_estado():
+    dp = punto_rocio(temperatura_actual, humedad_actual)
+    confort = sensacion_ambiente(temperatura_actual, humedad_actual)
+    resf = estado_resfriado(temperatura_actual, humedad_actual)
+    rssi = wifi_rssi()
+
+    return """{{
+  "version": "{version}",
+  "ip": "{ip}",
+  "temperatura": "{temp}",
+  "humedad": "{hum}",
+  "punto_rocio": "{dp}",
+  "confort": "{confort}",
+  "resfriado": "{resfriado}",
+  "sensor_ok": {sensor_ok},
+  "wifi_ok": {wifi_ok},
+  "rssi": "{rssi}",
+  "uptime": "{uptime}",
+  "ultima_lectura_epoch": "{ultima}"
+}}""".format(
+        version=VERSION,
+        ip=wifi_ip,
+        temp=fmt1(temperatura_actual),
+        hum=fmt1(humedad_actual),
+        dp=fmt1(dp),
+        confort=confort,
+        resfriado=resf,
+        sensor_ok="true" if sensor_ok else "false",
+        wifi_ok="true" if wifi_conectado() else "false",
+        rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
+        uptime=uptime_texto(),
+        ultima=ultima_lectura_epoch
+    )
+
 # =========================================
-# WEB - RESPUESTA
+# RESPUESTA HTTP
 # =========================================
 def responder(cl, body, ctype="text/html; charset=utf-8", code="200 OK", extras=None):
     try:
@@ -829,10 +948,13 @@ def manejar_web():
         elif "GET /estado " in req:
             responder(cl, html_estado())
 
+        elif "GET /acciones " in req:
+            responder(cl, html_acciones())
+
         elif "GET /leer " in req:
             ok = leer_sensor()
             if ok:
-                lcd_msg("Lectura manual", "OK", 0)
+                actualizar_lcd_principal(True)
             else:
                 lcd_msg("Lectura manual", "ERROR", 0)
             responder(cl, html_inicio())
@@ -840,26 +962,34 @@ def manejar_web():
         elif "GET /borrar_csv " in req:
             ok, msg = borrar_csv()
             lcd_msg("CSV", "reiniciado" if ok else "error", 0)
-            responder(
-                cl,
-                "<html><body><h1>{}</h1><p><a href='/'>Volver</a></p></body></html>".format(msg)
-            )
+            responder(cl, "<html><body><h1>{}</h1><p><a href='/'>Volver</a></p></body></html>".format(msg))
 
         elif "GET /toggle_log " in req:
             guardado_activo = not guardado_activo
             lcd_msg("Guardado", "ON" if guardado_activo else "OFF", 0)
-            responder(cl, html_inicio())
+            responder(cl, html_acciones())
 
         elif "GET /lcd_on " in req:
             lcd_activo = True
             init_lcd()
-            lcd_msg("LCD", "ACTIVADO", 0)
-            responder(cl, html_inicio())
+            try:
+                lcd.backlight_on()
+            except:
+                pass
+            actualizar_lcd_principal(True)
+            responder(cl, html_acciones())
 
         elif "GET /lcd_off " in req:
-            lcd_msg("LCD", "APAGANDO", 0)
+            try:
+                lcd_msg("LCD", "APAGANDO", 1)
+                lcd.backlight_off()
+            except:
+                pass
             lcd_activo = False
-            responder(cl, html_inicio())
+            responder(cl, html_acciones())
+
+        elif "GET /json " in req:
+            responder(cl, json_estado(), ctype="application/json; charset=utf-8")
 
         elif "GET /reiniciar " in req:
             responder(cl, "<html><body><h1>Reiniciando ESP32...</h1></body></html>")
@@ -905,10 +1035,9 @@ init_server()
 
 lcd_msg("Web lista", texto_seguro(wifi_ip, 16), PAUSA_LCD_BOOT)
 
+# lectura inmediata al arranque
 if leer_sensor():
-    lcd_msg("Temp {}C".format(fmt1(temperatura_actual)),
-            "Hum {}%".format(fmt1(humedad_actual)),
-            PAUSA_LCD_BOOT)
+    actualizar_lcd_principal(True)
 else:
     lcd_msg("Sensor Error", "sin lectura", PAUSA_LCD_BOOT)
 
@@ -922,15 +1051,14 @@ while True:
         gc.collect()
         refrescar_ip()
         manejar_web()
+        actualizar_lcd_principal(False)
 
         ahora = ahora_epoch()
 
         if ahora - ultimo_guardado >= INTERVALO_GUARDADO:
             if leer_sensor():
                 guardar_csv(temperatura_actual, humedad_actual)
-                lcd_msg("Temp {}C".format(fmt1(temperatura_actual)),
-                        "Hum {}%".format(fmt1(humedad_actual)),
-                        0)
+                actualizar_lcd_principal(True)
             else:
                 lcd_msg("Sensor Error", "reintentando", 0)
 
@@ -938,9 +1066,7 @@ while True:
 
         if temperatura_actual is None or humedad_actual is None:
             if leer_sensor():
-                lcd_msg("Temp {}C".format(fmt1(temperatura_actual)),
-                        "Hum {}%".format(fmt1(humedad_actual)),
-                        0)
+                actualizar_lcd_principal(True)
             else:
                 lcd_msg("Esperando", "sensor...", 0)
                 time.sleep(1)
