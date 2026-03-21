@@ -1,232 +1,193 @@
 # =========================================
-# ESP32 JC - DEBUG MAIN
+# ESP32 JC - MAIN RECOVERY
 # =========================================
 
-import gc
-import os
 import time
+import socket
+import gc
+from machine import Pin, I2C
+import dht
+import network
 
-DEBUG_FILE = "debug.log"
+VERSION = "RECOVERY v1"
 
-def dlog(msg):
-    txt = "[DEBUG] " + str(msg)
-    print(txt)
-    try:
-        with open(DEBUG_FILE, "a") as f:
-            f.write(txt + "\n")
-    except:
-        pass
-
-def limpiar_debug():
-    try:
-        if DEBUG_FILE in os.listdir():
-            os.remove(DEBUG_FILE)
-    except:
-        pass
-
-limpiar_debug()
-dlog("Inicio debug main")
+LCD_SDA = 8
+LCD_SCL = 9
+LCD_ADDR = 0x27
+DHT_PIN = 4
 
 lcd = None
 sensor = None
-server = None
 wifi_ip = "Sin WiFi"
 
-# -------------------------------------------------
-# 1. IMPORTS BASE
-# -------------------------------------------------
-try:
-    import socket
-    import network
-    import dht
-    import math
-    import machine
-    from machine import Pin, I2C
-    dlog("OK 1 imports base")
-except Exception as e:
-    dlog("FALLO 1 imports base -> {}".format(e))
-    raise
 
-# -------------------------------------------------
-# 2. LCD
-# -------------------------------------------------
-try:
+def log(msg):
+    print("[RECOVERY]", msg)
+
+
+def init_lcd():
+    global lcd
     from lcd import LCD
-    i2c = I2C(0, sda=Pin(8), scl=Pin(9))
-    lcd = LCD(i2c, 0x27, cols=16, rows=2)
+    i2c = I2C(0, sda=Pin(LCD_SDA), scl=Pin(LCD_SCL))
+    lcd = LCD(i2c, LCD_ADDR, cols=16, rows=2)
     try:
         lcd.reinit()
-    except Exception as e:
-        dlog("LCD reinit aviso -> {}".format(e))
-
+    except:
+        pass
     try:
         lcd.backlight_on()
-    except Exception as e:
-        dlog("LCD backlight aviso -> {}".format(e))
-
+    except:
+        pass
     lcd.clear()
-    lcd.message("DEBUG MAIN", "OK LCD")
-    dlog("OK 2 lcd")
-    time.sleep(2)
 
-except Exception as e:
-    dlog("FALLO 2 lcd -> {}".format(e))
-    raise
 
-# -------------------------------------------------
-# helper LCD seguro
-# -------------------------------------------------
-def lcd_show(a="", b=""):
+def lcd_msg(a="", b=""):
     global lcd
+    if lcd is None:
+        return
     try:
-        if lcd is not None:
-            lcd.message(str(a), str(b))
+        lcd.message(str(a), str(b))
     except Exception as e:
-        dlog("LCD_SHOW fallo -> {}".format(e))
+        print("LCD error:", e)
 
-# -------------------------------------------------
-# 3. SENSOR
-# -------------------------------------------------
-try:
-    sensor = dht.DHT22(Pin(4))
-    dlog("OK 3 sensor init")
-    lcd_show("DEBUG SENSOR", "iniciado")
-    time.sleep(2)
-except Exception as e:
-    dlog("FALLO 3 sensor init -> {}".format(e))
-    lcd_show("FALLO SENSOR", str(e)[:16])
-    raise
 
-# -------------------------------------------------
-# 4. WIFI / IP
-# -------------------------------------------------
-try:
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
+def init_sensor():
+    global sensor
+    sensor = dht.DHT22(Pin(DHT_PIN))
 
-    if wlan.isconnected():
-        wifi_ip = wlan.ifconfig()[0]
-    else:
-        wifi_ip = "Sin WiFi"
 
-    dlog("OK 4 wifi/ip -> {}".format(wifi_ip))
-    lcd_show("DEBUG WIFI", wifi_ip[:16])
-    time.sleep(2)
+def get_wifi_ip():
+    try:
+        wlan = network.WLAN(network.STA_IF)
+        if wlan.isconnected():
+            return wlan.ifconfig()[0]
+    except:
+        pass
+    return "Sin WiFi"
 
-except Exception as e:
-    dlog("FALLO 4 wifi/ip -> {}".format(e))
-    lcd_show("FALLO WIFI", str(e)[:16])
-    raise
 
-# -------------------------------------------------
-# 5. CSV
-# -------------------------------------------------
-try:
-    with open("temperaturas.csv", "a") as f:
-        if f.tell() == 0:
-            f.write("debug\n")
-    dlog("OK 5 csv")
-    lcd_show("DEBUG CSV", "OK")
-    time.sleep(2)
-except Exception as e:
-    dlog("FALLO 5 csv -> {}".format(e))
-    lcd_show("FALLO CSV", str(e)[:16])
-    raise
+def leer_sensor():
+    global sensor
+    try:
+        sensor.measure()
+        t = round(sensor.temperature(), 1)
+        h = round(sensor.humidity(), 1)
+        return t, h, None
+    except Exception as e:
+        return None, None, str(e)
 
-# -------------------------------------------------
-# 6. LECTURA SENSOR REAL
-# -------------------------------------------------
-try:
-    sensor.measure()
-    t = sensor.temperature()
-    h = sensor.humidity()
-    dlog("OK 6 lectura sensor -> T={} H={}".format(t, h))
-    lcd_show("T:{} H:{}".format(t, h), "lectura OK")
-    time.sleep(3)
-except Exception as e:
-    dlog("FALLO 6 lectura sensor -> {}".format(e))
-    lcd_show("FALLO LECT", str(e)[:16])
-    raise
 
-# -------------------------------------------------
-# 7. SERVIDOR WEB SIMPLE
-# -------------------------------------------------
-try:
-    addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
-    server = socket.socket()
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(addr)
-    server.listen(2)
-    server.settimeout(1)
+def html(ip, temp, hum, err):
+    return """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recovery ESP32</title>
+<style>
+body {{
+    font-family: Arial, sans-serif;
+    background: #08111f;
+    color: #eef4ff;
+    padding: 16px;
+}}
+.card {{
+    background: #0d1b2a;
+    border: 1px solid #1f4f88;
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 16px;
+}}
+.big {{
+    font-size: 34px;
+    font-weight: bold;
+}}
+</style>
+</head>
+<body>
+<div class="card">
+    <h1>ESP32 Recovery</h1>
+    <p>Version: {version}</p>
+    <p>IP: {ip}</p>
+</div>
 
-    dlog("OK 7 server web")
-    lcd_show("DEBUG WEB", "OK")
-    time.sleep(2)
-except Exception as e:
-    dlog("FALLO 7 server web -> {}".format(e))
-    lcd_show("FALLO WEB", str(e)[:16])
-    raise
+<div class="card">
+    <p>Temperatura</p>
+    <div class="big">{temp}</div>
+</div>
 
-# -------------------------------------------------
-# 8. LOOP DEBUG
-# -------------------------------------------------
-contador = 0
-dlog("Entrando loop debug")
-lcd_show("DEBUG LOOP", "iniciando")
+<div class="card">
+    <p>Humedad</p>
+    <div class="big">{hum}</div>
+</div>
+
+<div class="card">
+    <p>Error</p>
+    <div>{err}</div>
+</div>
+</body>
+</html>
+""".format(
+        version=VERSION,
+        ip=ip,
+        temp="--.- °C" if temp is None else "{} °C".format(temp),
+        hum="--.- %" if hum is None else "{} %".format(hum),
+        err="Ninguno" if err is None else err
+    )
+
+
+log("Iniciando recovery")
+gc.collect()
+
+init_lcd()
+lcd_msg("ESP32 RECOVERY", VERSION)
+time.sleep(2)
+
+wifi_ip = get_wifi_ip()
+lcd_msg("WiFi", wifi_ip)
+time.sleep(2)
+
+init_sensor()
+lcd_msg("Sensor", "Inicializado")
+time.sleep(2)
+
+addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(addr)
+s.listen(2)
+s.settimeout(1)
+
+log("Servidor web listo")
+lcd_msg("Web lista", wifi_ip)
 time.sleep(2)
 
 while True:
     try:
         gc.collect()
-        contador += 1
 
-        # lectura sensor
-        try:
-            sensor.measure()
-            t = sensor.temperature()
-            h = sensor.humidity()
-            dlog("LOOP sensor OK -> T={} H={}".format(t, h))
-        except Exception as e:
-            t = None
-            h = None
-            dlog("LOOP sensor FAIL -> {}".format(e))
+        wifi_ip = get_wifi_ip()
+        temp, hum, err = leer_sensor()
 
-        # pantalla
-        try:
-            if contador % 3 == 1:
-                lcd_show("Paso {}".format(contador), "Sensor OK" if t is not None else "Sensor FAIL")
-            elif contador % 3 == 2:
-                lcd_show("Temp {}".format(t), "Hum {}".format(h))
-            else:
-                lcd_show("IP", wifi_ip[:16])
-        except Exception as e:
-            dlog("LOOP lcd FAIL -> {}".format(e))
+        if err is None:
+            lcd_msg("T {}C".format(temp), "H {}%".format(hum))
+        else:
+            lcd_msg("Sensor error", str(err)[:16])
 
-        # web simple
         try:
-            cl, addr = server.accept()
+            cl, addr = s.accept()
             req = cl.recv(1024)
-            body = """<html><body>
-<h1>DEBUG ESP32</h1>
-<p>Contador: {}</p>
-<p>IP: {}</p>
-<p>Temp: {}</p>
-<p>Hum: {}</p>
-<p>Archivo debug.log: OK</p>
-</body></html>""".format(contador, wifi_ip, t, h)
-
+            body = html(wifi_ip, temp, hum, err)
             cl.send("HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n")
             cl.send(body)
             cl.close()
-            dlog("LOOP web request OK")
         except OSError:
             pass
-        except Exception as e:
-            dlog("LOOP web FAIL -> {}".format(e))
 
         time.sleep(2)
 
     except Exception as e:
-        dlog("FALLO LOOP GENERAL -> {}".format(e))
-        lcd_show("FALLO LOOP", str(e)[:16])
-        time.sleep(3)
+        log("Loop error: {}".format(e))
+        lcd_msg("Loop error", str(e)[:16])
+        time.sleep(2)
