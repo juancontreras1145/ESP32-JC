@@ -1,6 +1,6 @@
 # =========================================
-# ESP32 JC - Monitor Ambiental v60
-# Web profesional + logs + LCD + JSON
+# ESP32 JC - Monitor Ambiental v61
+# Web profesional + logs + LCD + JSON + NTP
 # =========================================
 
 import time
@@ -11,9 +11,10 @@ import os
 import gc
 import math
 import machine
+import ntptime
 from machine import Pin, I2C
 
-VERSION = "ESP32 JC Monitor v60"
+VERSION = "ESP32 JC Monitor v61"
 
 # -----------------------------
 # CONFIG
@@ -72,6 +73,8 @@ server_ok = False
 server_error = "Ninguno"
 
 wifi_ip = "Sin WiFi"
+ntp_ok = False
+ntp_error = "Sin sincronizar"
 
 contador_lecturas = 0
 contador_guardados = 0
@@ -218,6 +221,23 @@ def clear_logs():
         return False, str(e)
 
 # -----------------------------
+# NTP
+# -----------------------------
+def sync_time_ntp():
+    global ntp_ok, ntp_error
+    try:
+        ntptime.settime()
+        ntp_ok = True
+        ntp_error = "Ninguno"
+        append_log("Hora NTP sincronizada")
+        return True
+    except Exception as e:
+        ntp_ok = False
+        ntp_error = str(e)
+        append_log("NTP error: {}".format(e), "WARN")
+        return False
+
+# -----------------------------
 # LCD
 # -----------------------------
 def init_lcd():
@@ -226,10 +246,6 @@ def init_lcd():
         from lcd import LCD
         i2c = I2C(0, sda=Pin(LCD_SDA), scl=Pin(LCD_SCL))
         lcd = LCD(i2c, LCD_ADDR, cols=16, rows=2)
-        try:
-            lcd.reinit()
-        except Exception as e:
-            append_log("LCD reinit aviso: {}".format(e), "WARN")
         try:
             lcd.backlight_on()
         except Exception as e:
@@ -768,6 +784,7 @@ def page_home():
         <div class="sub">Fecha: {fecha}</div>
         <div class="sub">Hora: {hora}</div>
         <div class="sub">Uptime: {uptime}</div>
+        <div class="sub">NTP: <span class="{ntp_class}">{ntp_state}</span></div>
         <div class="sub">Sensor: <span class="{sensor_class}">{sensor_state}</span></div>
         <div class="sub">WiFi: <span class="{wifi_class}">{wifi_state}</span></div>
         <div class="sub">RSSI: {rssi}</div>
@@ -835,6 +852,7 @@ def page_home():
         <a class="btn btn2" href="/lcd_on">LCD ON</a>
         <a class="btn btn2" href="/lcd_off">LCD OFF</a>
         <a class="btn btn2" href="/toggle_log">{log_text}</a>
+        <a class="btn btn2" href="/sync_time">Sincronizar hora</a>
         <a class="btn btn2" href="/borrar_csv">Borrar CSV</a>
         <a class="btn btn2" href="/borrar_logs">Borrar logs</a>
         <a class="btn btn2" href="/reiniciar">Reiniciar</a>
@@ -850,6 +868,8 @@ def page_home():
         fecha=fecha_texto(),
         hora=hora_texto(),
         uptime=uptime_texto(),
+        ntp_class="ok" if ntp_ok else "bad",
+        ntp_state="Sincronizado" if ntp_ok else "No sincronizado",
         sensor_class="ok" if sensor_ok else "bad",
         sensor_state="OK" if sensor_ok else "ERROR",
         wifi_class="ok" if wifi_conectado() else "bad",
@@ -922,6 +942,8 @@ def page_status():
         <div class="mono">Uptime: {uptime}</div>
         <div class="mono">RAM libre: {ram}</div>
         <div class="mono">RSSI: {rssi}</div>
+        <div class="mono">NTP OK: {ntp_ok}</div>
+        <div class="mono">NTP error: {ntp_error}</div>
         <div class="mono">LCD OK: {lcd_ok}</div>
         <div class="mono">LCD error: {lcd_error}</div>
         <div class="mono">Sensor OK: {sensor_ok}</div>
@@ -953,6 +975,8 @@ def page_status():
         uptime=uptime_texto(),
         ram=mem_free(),
         rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
+        ntp_ok=ntp_ok,
+        ntp_error=ntp_error,
         lcd_ok=lcd_ok,
         lcd_error=lcd_error,
         sensor_ok=sensor_ok,
@@ -988,6 +1012,7 @@ def json_status():
   "tendencia_hum": "{th}",
   "sensor_ok": {sensor_ok},
   "wifi_ok": {wifi_ok},
+  "ntp_ok": {ntp_ok},
   "rssi": "{rssi}",
   "uptime": "{uptime}",
   "ultima_lectura_local": "{ultima}"
@@ -1005,6 +1030,7 @@ def json_status():
         th=hum_trend(),
         sensor_ok="true" if sensor_ok else "false",
         wifi_ok="true" if wifi_conectado() else "false",
+        ntp_ok="true" if ntp_ok else "false",
         rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
         uptime=uptime_texto(),
         ultima=ultima_lectura_epoch
@@ -1097,6 +1123,12 @@ def handle_web():
                 append_log("Lectura manual FAIL", "WARN")
             respond(cl, page_home())
 
+        elif "GET /sync_time " in req:
+            ok = sync_time_ntp()
+            append_log("Sincronizacion manual NTP => {}".format(ok))
+            rotate_lcd(True)
+            respond(cl, page_home())
+
         elif "GET /borrar_csv " in req:
             ok, msg = clear_csv()
             append_log("Accion borrar_csv: {}".format(msg))
@@ -1139,6 +1171,14 @@ def handle_web():
         server_ok = True
         server_error = "Ninguno"
 
+    except OSError as e:
+        # Error típico cuando el navegador corta la conexión
+        if "104" not in str(e):
+            server_ok = False
+            server_error = str(e)
+            contador_errores_web += 1
+            append_log("web handler OSError: {}".format(e), "ERROR")
+
     except Exception as e:
         server_ok = False
         server_error = str(e)
@@ -1163,6 +1203,11 @@ lcd_msg("Iniciando", "sensor / web", PAUSA_LCD_BOOT, True)
 init_sensor()
 ensure_csv()
 refresh_ip()
+
+if wifi_conectado():
+    sync_time_ntp()
+    refresh_ip()
+
 init_server()
 
 lcd_msg("Web lista", safe_str(wifi_ip, 16), PAUSA_LCD_BOOT, True)
@@ -1189,6 +1234,9 @@ while True:
         ahora = now_epoch()
 
         if ahora - ultimo_guardado >= INTERVALO_GUARDADO:
+            if wifi_conectado() and not ntp_ok:
+                sync_time_ntp()
+
             if read_sensor():
                 save_csv(temperatura_actual, humedad_actual)
                 rotate_lcd(True)
