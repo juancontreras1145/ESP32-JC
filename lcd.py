@@ -67,9 +67,6 @@ class LCD:
     def clear(self):
         self.command(0x01)
 
-    def home(self):
-        self.command(0x02)
-
     def move_to(self, col, row):
         row_offsets = [0x00, 0x40, 0x14, 0x54]
         self.command(0x80 + row_offsets[row] + col)
@@ -87,20 +84,34 @@ class LCD:
         self._write_byte(0)
 
     # -------------------------
-    # TEXT
+    # TEXT ALIGN (sin ljust)
     # -------------------------
 
+    def _pad_left(self, text):
+        return text + " " * (self.cols - len(text))
+
+    def _pad_right(self, text):
+        return " " * (self.cols - len(text)) + text
+
+    def _pad_center(self, text):
+        space = self.cols - len(text)
+        left = space // 2
+        right = space - left
+        return (" " * left) + text + (" " * right)
+
     def write_line(self, text, row=0, align="left"):
+
+        text = str(text)
 
         if len(text) > self.cols:
             text = text[:self.cols]
 
         if align == "center":
-            text = text.center(self.cols)
+            text = self._pad_center(text)
         elif align == "right":
-            text = text.rjust(self.cols)
+            text = self._pad_right(text)
         else:
-            text = text.ljust(self.cols)
+            text = self._pad_left(text)
 
         self.move_to(0, row)
         self.putstr(text)
@@ -121,6 +132,8 @@ class LCD:
 
     def scroll_text(self, text, row=0, delay_ms=200, loops=1):
 
+        text = str(text)
+
         if len(text) <= self.cols:
             self.write_line(text, row)
             return
@@ -131,13 +144,3 @@ class LCD:
             for i in range(len(buf) - self.cols + 1):
                 self.write_line(buf[i:i+self.cols], row)
                 time.sleep_ms(delay_ms)
-
-    # -------------------------
-    # REINIT
-    # -------------------------
-
-    def reinit(self):
-        self.clear()
-        self.command(0x28)
-        self.command(0x0C)
-        self.command(0x06)
