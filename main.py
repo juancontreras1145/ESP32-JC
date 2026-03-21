@@ -1,23 +1,7 @@
 # =========================================
-# ESP32 JC - Monitor Ambiental v41
-# Negro + verde, todo en español
-# =========================================
-# Hardware:
-# LCD I2C 1602 -> SDA=8, SCL=9, ADDR=0x27
-# DHT22 -> GPIO4
-#
-# Rutas:
-# /              Panel principal
-# /estado        Estado técnico
-# /acciones      Panel de acciones
-# /leer          Fuerza lectura
-# /descargar     Descarga CSV
-# /borrar_csv    Reinicia CSV
-# /toggle_log    Activa/desactiva guardado
-# /lcd_on        Enciende LCD
-# /lcd_off       Apaga LCD
-# /json          Estado en JSON
-# /reiniciar     Reinicia ESP32
+# ESP32 JC - Monitor Ambiental v42
+# Azul marino, hora Chile/Valparaíso,
+# LCD con apagado lógico real
 # =========================================
 
 import time
@@ -31,10 +15,7 @@ import machine
 
 from machine import Pin, I2C
 
-# =========================================
-# CONFIGURACIÓN
-# =========================================
-VERSION = "Monitor Ambiental v41"
+VERSION = "Monitor Ambiental v42"
 
 LCD_SDA = 8
 LCD_SCL = 9
@@ -61,9 +42,9 @@ HUM_ALTA = 70.0
 
 ROTACION_LCD_SEG = 2
 
-# =========================================
-# ESTADO GLOBAL
-# =========================================
+# Hora local Chile continental / Valparaíso
+UTC_OFFSET_HORAS = -3
+
 inicio_epoch = time.time()
 ultimo_guardado = 0
 ultima_lectura_epoch = None
@@ -98,14 +79,13 @@ sensor = None
 lcd = None
 server = None
 
-# =========================================
-# HELPERS
-# =========================================
+
 def ahora_epoch():
     try:
         return int(time.time())
     except:
         return 0
+
 
 def texto_seguro(x, n=16):
     try:
@@ -113,11 +93,13 @@ def texto_seguro(x, n=16):
     except:
         return "?"
 
+
 def existe_archivo(nombre):
     try:
         return nombre in os.listdir()
     except:
         return False
+
 
 def memoria_libre():
     try:
@@ -126,6 +108,7 @@ def memoria_libre():
     except:
         return -1
 
+
 def uptime_texto():
     seg = max(0, int(time.time() - inicio_epoch))
     h = seg // 3600
@@ -133,59 +116,97 @@ def uptime_texto():
     s = seg % 60
     return "{:02d}:{:02d}:{:02d}".format(h, m, s)
 
+
 def fmt1(x):
     if x is None:
         return "--.-"
     return "{:.1f}".format(x)
 
+
 def estado_sensor():
     return "OK" if sensor_ok else "ERROR"
+
 
 def estado_wifi():
     return "Conectado" if wifi_conectado() else "Sin WiFi"
 
+
+def epoch_local():
+    return ahora_epoch() + (UTC_OFFSET_HORAS * 3600)
+
+
 def hora_actual_texto():
     try:
-        t = time.localtime()
+        t = time.localtime(epoch_local())
         return "{:02d}:{:02d}:{:02d}".format(t[3], t[4], t[5])
     except:
         return "--:--:--"
 
+
 def fecha_actual_texto():
     try:
-        t = time.localtime()
+        t = time.localtime(epoch_local())
         return "{:04d}-{:02d}-{:02d}".format(t[0], t[1], t[2])
     except:
         return "----/--/--"
 
-# =========================================
-# LCD
-# =========================================
+
 def init_lcd():
     global lcd, lcd_ok, lcd_error
     try:
         from lcd import LCD
         i2c = I2C(0, sda=Pin(LCD_SDA), scl=Pin(LCD_SCL))
         lcd = LCD(i2c, LCD_ADDR)
+
         try:
             lcd.reinit()
         except:
             pass
+
         time.sleep_ms(150)
         lcd.clear()
+
         try:
             lcd.backlight_on()
         except:
             pass
+
         lcd_ok = True
         lcd_error = "Ninguno"
         return True
+
     except Exception as e:
         lcd = None
         lcd_ok = False
         lcd_error = str(e)
         print("LCD init error:", e)
         return False
+
+
+def lcd_apagar_total():
+    global lcd_activo
+    lcd_activo = False
+    try:
+        if lcd is not None:
+            lcd.clear()
+            try:
+                lcd.backlight_off()
+            except:
+                pass
+    except:
+        pass
+
+
+def lcd_encender_total():
+    global lcd_activo
+    lcd_activo = True
+    init_lcd()
+    try:
+        if lcd is not None:
+            lcd.backlight_on()
+    except:
+        pass
+
 
 def lcd_escribir(linea1="", linea2=""):
     global lcd_ok, lcd_error, contador_errores_lcd
@@ -206,6 +227,7 @@ def lcd_escribir(linea1="", linea2=""):
         lcd_ok = True
         lcd_error = "Ninguno"
         return True
+
     except Exception as e:
         contador_errores_lcd += 1
         lcd_ok = False
@@ -213,7 +235,11 @@ def lcd_escribir(linea1="", linea2=""):
         print("LCD write error:", e)
         return False
 
+
 def lcd_msg(linea1="", linea2="", pausa=0):
+    if not lcd_activo:
+        return
+
     ok = lcd_escribir(linea1, linea2)
     if not ok:
         try:
@@ -224,14 +250,13 @@ def lcd_msg(linea1="", linea2="", pausa=0):
     if pausa > 0:
         time.sleep(pausa)
 
-# =========================================
-# WIFI
-# =========================================
+
 def wifi_conectado():
     try:
         return network.WLAN(network.STA_IF).isconnected()
     except:
         return False
+
 
 def refrescar_ip():
     global wifi_ip
@@ -244,6 +269,7 @@ def refrescar_ip():
     except:
         wifi_ip = "Sin WiFi"
 
+
 def wifi_rssi():
     try:
         wlan = network.WLAN(network.STA_IF)
@@ -253,9 +279,7 @@ def wifi_rssi():
         pass
     return None
 
-# =========================================
-# SENSOR
-# =========================================
+
 def init_sensor():
     global sensor
     try:
@@ -265,6 +289,7 @@ def init_sensor():
         print("Sensor init error:", e)
         sensor = None
         return False
+
 
 def leer_sensor():
     global temperatura_actual, humedad_actual, ultima_lectura_epoch
@@ -291,7 +316,7 @@ def leer_sensor():
 
             temperatura_actual = t
             humedad_actual = h
-            ultima_lectura_epoch = ahora_epoch()
+            ultima_lectura_epoch = epoch_local()
 
             sensor_ok = True
             sensor_error = "Ninguno"
@@ -307,9 +332,7 @@ def leer_sensor():
 
     return False
 
-# =========================================
-# CÁLCULOS AMBIENTALES
-# =========================================
+
 def punto_rocio(temp, hum):
     try:
         if temp is None or hum is None or hum <= 0:
@@ -322,6 +345,7 @@ def punto_rocio(temp, hum):
     except:
         return None
 
+
 def sensacion_ambiente(temp, hum):
     if temp is None or hum is None:
         return "Sin datos"
@@ -330,6 +354,7 @@ def sensacion_ambiente(temp, hum):
     if 18 <= temp <= 27 and 35 <= hum <= 70:
         return "Regular"
     return "Malo"
+
 
 def lista_alertas(temp, hum):
     alertas = []
@@ -356,6 +381,7 @@ def lista_alertas(temp, hum):
 
     return alertas
 
+
 def estado_resfriado(temp, hum):
     if temp is None or hum is None:
         return "Sin datos"
@@ -365,6 +391,7 @@ def estado_resfriado(temp, hum):
         return "Aceptable"
     return "Poco favorable"
 
+
 def semaforo_ambiente():
     estado = sensacion_ambiente(temperatura_actual, humedad_actual)
     if estado == "Bueno":
@@ -373,16 +400,15 @@ def semaforo_ambiente():
         return "🟡"
     return "🔴"
 
-# =========================================
-# CSV
-# =========================================
+
 def asegurar_csv():
     try:
         if not existe_archivo(CSV_FILE):
             with open(CSV_FILE, "w") as f:
-                f.write("epoch,temperatura,humedad,punto_rocio,confort,resfriado\n")
+                f.write("epoch_local,temperatura,humedad,punto_rocio,confort,resfriado\n")
     except Exception as e:
         print("CSV init error:", e)
+
 
 def guardar_csv(temp, hum):
     global contador_guardados
@@ -397,7 +423,7 @@ def guardar_csv(temp, hum):
 
         with open(CSV_FILE, "a") as f:
             f.write("{},{:.1f},{:.1f},{},{},{}\n".format(
-                ahora_epoch(),
+                epoch_local(),
                 temp,
                 hum,
                 "" if dp is None else "{:.1f}".format(dp),
@@ -412,12 +438,14 @@ def guardar_csv(temp, hum):
         print("CSV save error:", e)
         return False
 
+
 def leer_csv_texto():
     try:
         with open(CSV_FILE, "r") as f:
             return f.read()
     except Exception as e:
         return "Error leyendo CSV: {}".format(e)
+
 
 def borrar_csv():
     try:
@@ -427,6 +455,7 @@ def borrar_csv():
         return True, "CSV reiniciado"
     except Exception as e:
         return False, str(e)
+
 
 def estadisticas():
     datos = {
@@ -466,9 +495,7 @@ def estadisticas():
 
     return datos
 
-# =========================================
-# LCD PANEL ROTATIVO
-# =========================================
+
 def actualizar_lcd_principal(forzar=False):
     global ultimo_cambio_lcd, indice_lcd
 
@@ -490,16 +517,12 @@ def actualizar_lcd_principal(forzar=False):
     pantallas = [
         ("T:{}C H:{}%".format(fmt1(temperatura_actual), fmt1(humedad_actual)),
          "Conf:{}".format(texto_seguro(confort, 10))),
-
         ("Rocio:{}C".format(fmt1(dp)),
          "Hora:{}".format(hora)),
-
         ("Alerta:",
          texto_seguro(alerta, 16)),
-
         ("Resfriado:",
          texto_seguro(estado_resfriado(temperatura_actual, humedad_actual), 16)),
-
         ("WiFi:{}".format("OK" if wifi_conectado() else "OFF"),
          texto_seguro(wifi_ip, 16)),
     ]
@@ -514,16 +537,14 @@ def actualizar_lcd_principal(forzar=False):
     if indice_lcd >= len(pantallas):
         indice_lcd = 0
 
-# =========================================
-# WEB - ESTILO
-# =========================================
+
 def estilo_base():
     return """
     <style>
     body {
         font-family: Arial, sans-serif;
-        background: #050b05;
-        color: #e8ffe8;
+        background: #08111f;
+        color: #eef4ff;
         margin: 0;
         padding: 16px;
     }
@@ -532,21 +553,21 @@ def estilo_base():
         margin: auto;
     }
     .card {
-        background: #0b140b;
-        border: 1px solid #1f5d1f;
+        background: #0d1b2a;
+        border: 1px solid #1f4f88;
         border-radius: 18px;
         padding: 16px;
         margin-bottom: 16px;
-        box-shadow: 0 0 0 1px rgba(0,255,80,0.05);
+        box-shadow: 0 0 0 1px rgba(90,140,220,0.05);
     }
     .title {
         font-size: 30px;
         font-weight: bold;
         margin-bottom: 8px;
-        color: #d8ffd8;
+        color: #f2f7ff;
     }
     .sub {
-        color: #9fd09f;
+        color: #b7c8e6;
         font-size: 14px;
         margin-bottom: 3px;
     }
@@ -563,35 +584,35 @@ def estilo_base():
     .big {
         font-size: 44px;
         font-weight: bold;
-        color: #f3fff3;
+        color: #ffffff;
     }
     .ok {
-        color: #4dff88;
+        color: #66e3a3;
         font-weight: bold;
     }
     .bad {
-        color: #ff6666;
+        color: #ff7b7b;
         font-weight: bold;
     }
     .btn {
         display: inline-block;
         padding: 12px 16px;
-        background: #1f7a1f;
-        color: #ecffec;
+        background: #295a96;
+        color: #eef6ff;
         text-decoration: none;
         border-radius: 12px;
         font-weight: bold;
         margin-right: 8px;
         margin-top: 8px;
-        border: 1px solid #2eb82e;
+        border: 1px solid #4f86c6;
     }
     .btn2 {
-        background: #103b10;
-        color: #bfffbf;
+        background: #162b45;
+        color: #dfeaff;
     }
     .mono {
         font-family: monospace;
-        background: #020617;
+        background: #040b16;
         padding: 10px;
         border-radius: 10px;
     }
@@ -604,15 +625,15 @@ def estilo_base():
         font-weight: bold;
     }
     .alert {
-        background: #5d1010;
-        color: #ffd0d0;
+        background: #5f1d2a;
+        color: #ffd5db;
     }
     .okpill {
-        background: #103b10;
-        color: #bfffbf;
+        background: #153247;
+        color: #cfe8ff;
     }
     a.inline {
-        color: #7dff9b;
+        color: #8ec5ff;
     }
     @media (max-width: 700px) {
         .grid, .grid3 {
@@ -622,9 +643,7 @@ def estilo_base():
     </style>
     """
 
-# =========================================
-# WEB - PÁGINAS
-# =========================================
+
 def html_inicio():
     est = estadisticas()
     alertas = lista_alertas(temperatura_actual, humedad_actual)
@@ -652,7 +671,7 @@ def html_inicio():
 <div class="wrap">
 
     <div class="card">
-        <div class="title">ESP32 JC Monitor v41</div>
+        <div class="title">ESP32 JC Monitor v42</div>
         <div class="sub">IP: {ip}</div>
         <div class="sub">Fecha: {fecha}</div>
         <div class="sub">Hora: {hora}</div>
@@ -661,7 +680,7 @@ def html_inicio():
         <div class="sub">WiFi: <span class="{wifi_class}">{wifi_state}</span></div>
         <div class="sub">RSSI: {rssi}</div>
         <div class="sub">Último error sensor: {sensor_error}</div>
-        <div class="sub">Última lectura epoch: {ultima}</div>
+        <div class="sub">Última lectura epoch local: {ultima}</div>
     </div>
 
     <div class="grid">
@@ -749,6 +768,7 @@ def html_inicio():
         count=est["count"],
     )
 
+
 def html_acciones():
     return """<!DOCTYPE html>
 <html lang="es">
@@ -779,6 +799,7 @@ def html_acciones():
         texto_log="Desactivar guardado" if guardado_activo else "Activar guardado"
     )
 
+
 def html_estado():
     return """<!DOCTYPE html>
 <html lang="es">
@@ -794,6 +815,8 @@ def html_estado():
         <div class="title">Estado técnico</div>
         <div class="mono">Versión: {version}</div>
         <div class="mono">IP: {ip}</div>
+        <div class="mono">Fecha: {fecha}</div>
+        <div class="mono">Hora: {hora}</div>
         <div class="mono">Uptime: {uptime}</div>
         <div class="mono">RAM libre: {ram}</div>
         <div class="mono">LCD OK: {lcd_ok}</div>
@@ -808,7 +831,7 @@ def html_estado():
         <div class="mono">Errores sensor: {es}</div>
         <div class="mono">Errores LCD: {el}</div>
         <div class="mono">Errores web: {ew}</div>
-        <div class="mono">Última lectura epoch: {ultima}</div>
+        <div class="mono">Última lectura epoch local: {ultima}</div>
         <div class="mono">CSV: {csv}</div>
         <div class="mono">Guardado activo: {log_activo}</div>
         <div class="mono">LCD activo: {lcd_activo}</div>
@@ -821,6 +844,8 @@ def html_estado():
         style=estilo_base(),
         version=VERSION,
         ip=wifi_ip,
+        fecha=fecha_actual_texto(),
+        hora=hora_actual_texto(),
         uptime=uptime_texto(),
         ram=memoria_libre(),
         lcd_ok=lcd_ok,
@@ -841,6 +866,7 @@ def html_estado():
         lcd_activo=lcd_activo
     )
 
+
 def json_estado():
     dp = punto_rocio(temperatura_actual, humedad_actual)
     confort = sensacion_ambiente(temperatura_actual, humedad_actual)
@@ -850,6 +876,8 @@ def json_estado():
     return """{{
   "version": "{version}",
   "ip": "{ip}",
+  "fecha": "{fecha}",
+  "hora": "{hora}",
   "temperatura": "{temp}",
   "humedad": "{hum}",
   "punto_rocio": "{dp}",
@@ -859,10 +887,12 @@ def json_estado():
   "wifi_ok": {wifi_ok},
   "rssi": "{rssi}",
   "uptime": "{uptime}",
-  "ultima_lectura_epoch": "{ultima}"
+  "ultima_lectura_epoch_local": "{ultima}"
 }}""".format(
         version=VERSION,
         ip=wifi_ip,
+        fecha=fecha_actual_texto(),
+        hora=hora_actual_texto(),
         temp=fmt1(temperatura_actual),
         hum=fmt1(humedad_actual),
         dp=fmt1(dp),
@@ -875,9 +905,7 @@ def json_estado():
         ultima=ultima_lectura_epoch
     )
 
-# =========================================
-# RESPUESTA HTTP
-# =========================================
+
 def responder(cl, body, ctype="text/html; charset=utf-8", code="200 OK", extras=None):
     try:
         cl.send("HTTP/1.0 {}\r\n".format(code))
@@ -890,9 +918,7 @@ def responder(cl, body, ctype="text/html; charset=utf-8", code="200 OK", extras=
     except Exception as e:
         print("send_response error:", e)
 
-# =========================================
-# SERVER
-# =========================================
+
 def init_server():
     global server, server_ok, server_error
     try:
@@ -913,9 +939,10 @@ def init_server():
         print("Server init error:", e)
         return False
 
+
 def manejar_web():
     global contador_hits, server_ok, server_error, contador_errores_web
-    global guardado_activo, lcd_activo
+    global guardado_activo
 
     if server is None:
         return
@@ -961,31 +988,23 @@ def manejar_web():
 
         elif "GET /borrar_csv " in req:
             ok, msg = borrar_csv()
-            lcd_msg("CSV", "reiniciado" if ok else "error", 0)
+            if lcd_activo:
+                actualizar_lcd_principal(True)
             responder(cl, "<html><body><h1>{}</h1><p><a href='/'>Volver</a></p></body></html>".format(msg))
 
         elif "GET /toggle_log " in req:
             guardado_activo = not guardado_activo
-            lcd_msg("Guardado", "ON" if guardado_activo else "OFF", 0)
+            if lcd_activo:
+                actualizar_lcd_principal(True)
             responder(cl, html_acciones())
 
         elif "GET /lcd_on " in req:
-            lcd_activo = True
-            init_lcd()
-            try:
-                lcd.backlight_on()
-            except:
-                pass
+            lcd_encender_total()
             actualizar_lcd_principal(True)
             responder(cl, html_acciones())
 
         elif "GET /lcd_off " in req:
-            try:
-                lcd_msg("LCD", "APAGANDO", 1)
-                lcd.backlight_off()
-            except:
-                pass
-            lcd_activo = False
+            lcd_apagar_total()
             responder(cl, html_acciones())
 
         elif "GET /json " in req:
@@ -1018,14 +1037,11 @@ def manejar_web():
     except:
         pass
 
-# =========================================
-# ARRANQUE
-# =========================================
+
 gc.collect()
 
 init_lcd()
 lcd_msg("ESP32 JC", VERSION, PAUSA_LCD_BOOT)
-
 lcd_msg("Iniciando", "sensor/web", PAUSA_LCD_BOOT)
 
 init_sensor()
@@ -1035,7 +1051,6 @@ init_server()
 
 lcd_msg("Web lista", texto_seguro(wifi_ip, 16), PAUSA_LCD_BOOT)
 
-# lectura inmediata al arranque
 if leer_sensor():
     actualizar_lcd_principal(True)
 else:
@@ -1043,9 +1058,6 @@ else:
 
 ultimo_guardado = ahora_epoch()
 
-# =========================================
-# LOOP
-# =========================================
 while True:
     try:
         gc.collect()
@@ -1075,4 +1087,5 @@ while True:
 
     except Exception as e:
         print("Loop error:", e)
-        lcd_msg("Loop Error", texto_seguro(e, 16), 2)
+        if lcd_activo:
+            lcd_msg("Loop Error", texto_seguro(e, 16), 2)
