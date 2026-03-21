@@ -111,4 +111,33 @@ class LCD:
             self.write_line(line2, 1)
 
     def message_centered(self, line1="", line2=""):
-        self.write_line(line
+        self.write_line(line1, 0, "center")
+        if self.rows > 1:
+            self.write_line(line2, 1, "center")
+
+    # -------------------------
+    # SCROLL
+    # -------------------------
+
+    def scroll_text(self, text, row=0, delay_ms=200, loops=1):
+
+        if len(text) <= self.cols:
+            self.write_line(text, row)
+            return
+
+        buf = text + "    "
+
+        for _ in range(loops):
+            for i in range(len(buf) - self.cols + 1):
+                self.write_line(buf[i:i+self.cols], row)
+                time.sleep_ms(delay_ms)
+
+    # -------------------------
+    # REINIT
+    # -------------------------
+
+    def reinit(self):
+        self.clear()
+        self.command(0x28)
+        self.command(0x0C)
+        self.command(0x06)
