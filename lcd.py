@@ -36,8 +36,6 @@ class LCD:
 
     def _startup(self):
         time.sleep_ms(50)
-
-        # secuencia robusta de arranque 4-bit
         for _ in range(3):
             self._send4(0x30)
             time.sleep_ms(5)
@@ -45,10 +43,10 @@ class LCD:
         self._send4(0x20)
         time.sleep_ms(5)
 
-        self.command(0x28)  # 4-bit, 2 líneas, 5x8
-        self.command(0x0C)  # display ON, cursor OFF
-        self.command(0x06)  # entry mode
-        self.command(0x01)  # clear
+        self.command(0x28)
+        self.command(0x0C)
+        self.command(0x06)
+        self.command(0x01)
         time.sleep_ms(5)
 
     def reinit(self):
@@ -67,3 +65,11 @@ class LCD:
     def putstr(self, s):
         for ch in s:
             self.write_char(ch)
+
+    def backlight_on(self):
+        self.backlight = 0x08
+        self._write(0x00)
+
+    def backlight_off(self):
+        self.backlight = 0x00
+        self._write(0x00)
