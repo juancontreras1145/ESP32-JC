@@ -56,7 +56,7 @@ MAX_CSV_LINES = 1440
 WEB_TOKEN = "jc123"
 ENABLE_FULL_HOME = False
 
-MAX_UPLOAD_SIZE = 12288
+MAX_UPLOAD_SIZE = 20480
 ARCHIVOS_OCULTOS = ("System Volume Information",)
 
 # Ubicacion fija por defecto
