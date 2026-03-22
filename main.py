@@ -18,14 +18,25 @@ from machine import Pin, I2C
 # ------------------------------
 # AUTO UPDATE
 # ------------------------------
+def _updated_result(res):
+    try:
+        if res is True or res == 1:
+            return True
+        if isinstance(res, dict):
+            return bool(res.get("updated") or res.get("ok"))
+    except:
+        pass
+    return False
+
 try:
     import updater
-    updater.update()
-    machine.reset()
+    if _updated_result(updater.update()):
+        time.sleep(0.5)
+        machine.reset()
 except Exception as e:
     print("Updater error:", e)
 
-VERSION = "ESP32 JC Monitor v4"
+VERSION = "ESP32 JC Monitor v64"
 
 # -----------------------------
 # CONFIG
@@ -215,7 +226,6 @@ def clamp_text(text, n=16):
         return s
     return s[:n]
 
-
 def html_escape(s):
     try:
         s = str(s)
@@ -227,10 +237,9 @@ def html_escape(s):
 def json_escape(s):
     try:
         s = str(s)
-        s = s.replace('\\', '\\\\').replace('"', '\"').replace('\n', ' ').replace('\r', ' ')
+        s = s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', ' ').replace('\r', ' ')
         return s
     except:
-        return ""
         return ""
 
 def to_bool_text(v):
@@ -586,20 +595,6 @@ def _parse_number_after(key, txt):
     except:
         return None
 
-def _parse_string_after(key, txt):
-    i = txt.find(key)
-    if i < 0:
-        return None
-    j = i + len(key)
-    out = ""
-    while j < len(txt):
-        ch = txt[j]
-        if ch == '"' or ch == "," or ch == "}" or ch == "]":
-            break
-        out += ch
-        j += 1
-    return out
-
 def _parse_first_from_array(key, txt):
     i = txt.find(key)
     if i < 0:
@@ -821,7 +816,6 @@ def jornada_actual():
     return "Madrugada"
 
 def sunrise_places():
-    # 24 franjas UTC con varios paises/ciudades donde puede estar amaneciendo aprox.
     try:
         h = time.localtime(now_epoch())[3]
     except:
@@ -865,14 +859,38 @@ def sunrise_places_text(max_len=None):
     return txt
 
 def line_for_lcd(label, value, unit=""):
+    if value is None:
+        if label == "Exterior":
+            return "Exterior s/dato"
+        if label == "Interior":
+            return "Interior s/dato"
+        if label == "Humedad":
+            return "Humedad s/dato"
+        return clamp_text(label + " s/dato", 16)
+
     valor = fmt1c(value)
-    if unit and not str(unit).startswith(" ") and str(unit) != "%":
-        unit = " " + str(unit)
-    txt = "{} {}{}".format(label, valor, unit)
+    txt = "{} {}{}".format(label, valor, (" " + unit) if unit else "")
     if len(txt) <= 16:
         return txt
+
+    if unit == "%":
+        txt = "{} {} %".format(label, fmt1c(value))
+        if len(txt) <= 16:
+            return txt
+
     valor = fmt_int(value)
-    txt = "{} {}{}".format(label, valor, unit)
+    txt = "{} {}{}".format(label, valor, (" " + unit) if unit else "")
+    if len(txt) <= 16:
+        return txt
+
+    if label == "Exterior":
+        txt = "Ext {}{}".format(fmt1c(value), (" " + unit) if unit else "")
+    elif label == "Interior":
+        txt = "Int {}{}".format(fmt1c(value), (" " + unit) if unit else "")
+    elif label == "Humedad":
+        txt = "Hum {} %".format(fmt1c(value))
+    else:
+        txt = "{} {}{}".format(label[:4], fmt1c(value), (" " + unit) if unit else "")
     return clamp_text(txt, 16)
 
 def consejo_lcd(texto):
@@ -1081,7 +1099,7 @@ def construir_consejos():
         "Puede resecar nariz y ojos",
         "Ventila con moderacion si seca mas",
         "El aire seco fatiga mas",
-        "Un paño humedo cerca puede ayudar",
+        "Un pano humedo cerca puede ayudar",
         "Evita resequedad prolongada",
         "Controla labios y garganta",
         "Humedad baja: confort irregular",
@@ -1148,7 +1166,7 @@ def construir_consejos():
         "Riesgo bajo: ambiente controlado",
         "Riesgo medio: revisa ventilacion",
         "Riesgo alto: ojo con condensacion",
-        "Si ves vidrio empañado, actua",
+        "Si ves vidrio empanado, actua",
         "El punto de rocio orienta bien",
         "Condensacion puede aparecer sin aviso",
         "Mejor prevenir que encerrar humedad",
@@ -1353,10 +1371,6 @@ def rotate_lcd(force=False):
 
     exterior_line = line_for_lcd("Exterior", temp_ext, "C")
     hum_ext_line = line_for_lcd("Humedad", hum_ext, "%")
-    if temp_ext is None:
-        exterior_line = "Exterior s/dato"
-    if hum_ext is None:
-        hum_ext_line = "Humedad s/dato"
 
     screens = [
         {"l1": line_for_lcd("Interior", temperatura_actual, "C"), "l2": line_for_lcd("Humedad", humedad_actual, "%")},
@@ -1510,14 +1524,14 @@ def page_home(full=False):
     <div class="grid2">
         <div class="card">
             <div class="sub">Interior</div>
-            <div class="big">{temp} °C</div>
+            <div class="big">{temp} C</div>
             <div class="sub">Humedad: {hum} %</div>
             <div class="sub">Tendencia T: {tt}</div>
             <div class="sub">Tendencia H: {th}</div>
         </div>
         <div class="card">
             <div class="sub">Exterior</div>
-            <div class="big">{temp_ext} °C</div>
+            <div class="big">{temp_ext} C</div>
             <div class="sub">Humedad: {hum_ext} %</div>
             <div class="sub">Viento: {wind} km/h</div>
             <div class="sub">Lluvia: {rain} mm</div>
@@ -1533,7 +1547,7 @@ def page_home(full=False):
         <div class="card">
             <div class="sub">Condensacion</div>
             <div class="big">{cond}</div>
-            <div class="sub">Punto de rocio interior: {dp} °C</div>
+            <div class="sub">Punto de rocio interior: {dp} C</div>
         </div>
     </div>
 
@@ -1625,18 +1639,18 @@ def page_home(full=False):
         lock_txt=html_escape(lock_txt),
         sensor_error=html_escape(sensor_error),
         ext_error=html_escape(ext_error),
-        temp=html_escape(fmt1(temperatura_actual)),
-        hum=html_escape(fmt1(humedad_actual)),
-        temp_ext=html_escape(fmt1(temp_ext)),
-        hum_ext=html_escape(fmt1(hum_ext)),
-        wind=html_escape(fmt1(wind_ext)),
-        rain=html_escape(fmt1(rain_ext)),
-        cloud=html_escape(fmt1(cloud_ext)),
+        temp=html_escape(fmt1(temperatura_actual).replace('.', ',')),
+        hum=html_escape(fmt1(humedad_actual).replace('.', ',')),
+        temp_ext=html_escape(fmt1(temp_ext).replace('.', ',')),
+        hum_ext=html_escape(fmt1(hum_ext).replace('.', ',')),
+        wind=html_escape(fmt1(wind_ext).replace('.', ',')),
+        rain=html_escape(fmt1(rain_ext).replace('.', ',')),
+        cloud=html_escape(fmt1(cloud_ext).replace('.', ',')),
         tt=html_escape(temp_trend()),
         th=html_escape(hum_trend()),
         icon=comfort_icon(),
         comfort=html_escape(comfort(temperatura_actual, humedad_actual)),
-        dp=html_escape(fmt1(dew_point(temperatura_actual, humedad_actual))),
+        dp=html_escape(fmt1(dew_point(temperatura_actual, humedad_actual)).replace('.', ',')),
         cond=html_escape(detect_condensation_risk()),
         compare=html_escape(compare_inside_outside()),
         cold=html_escape(cold_state(temperatura_actual, humedad_actual)),
@@ -1647,12 +1661,12 @@ def page_home(full=False):
         sunrise=html_escape(sunrise_ext),
         sunset=html_escape(sunset_ext),
         alerts=alerts_html,
-        tmin=html_escape(fmt1(st["tmin"])),
-        tmax=html_escape(fmt1(st["tmax"])),
-        tavg=html_escape(fmt1(st["tavg"])),
-        hmin=html_escape(fmt1(st["hmin"])),
-        hmax=html_escape(fmt1(st["hmax"])),
-        havg=html_escape(fmt1(st["havg"])),
+        tmin=html_escape(fmt1(st["tmin"]).replace('.', ',')),
+        tmax=html_escape(fmt1(st["tmax"]).replace('.', ',')),
+        tavg=html_escape(fmt1(st["tavg"]).replace('.', ',')),
+        hmin=html_escape(fmt1(st["hmin"]).replace('.', ',')),
+        hmax=html_escape(fmt1(st["hmax"]).replace('.', ',')),
+        havg=html_escape(fmt1(st["havg"]).replace('.', ',')),
         count=st["count"],
         graphs=graphs,
         log_text="Desactivar guardado" if guardado_activo else "Activar guardado",
@@ -1661,6 +1675,7 @@ def page_home(full=False):
     )
 
 def page_logs():
+    token_q = "?token={}".format(WEB_TOKEN) if WEB_TOKEN else ""
     return """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1675,16 +1690,17 @@ def page_logs():
     <div class="card">
         <div class="title">Logs del sistema</div>
         <div class="mono">{logs}</div>
-        <a class="btn" href="/?token=jc123">Volver</a>
-        <a class="btn btn2" href="/borrar_logs?token=jc123">Borrar logs</a>
+        <a class="btn" href="/{token_q}">Volver</a>
+        <a class="btn btn2" href="/borrar_logs{token_q}">Borrar logs</a>
     </div>
 </div>
 </body>
 </html>
-""".format(style=style_base(), logs=html_escape(read_logs()))
+""".format(style=style_base(), logs=html_escape(read_logs()), token_q=token_q)
 
 def page_status():
     rssi = wifi_rssi()
+    token_q = "?token={}".format(WEB_TOKEN) if WEB_TOKEN else ""
     return """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1726,7 +1742,7 @@ def page_status():
         <div class="mono">LOG: {logf}</div>
         <div class="mono">Guardado activo: {log_activo}</div>
         <div class="mono">LCD activo: {lcd_activo}</div>
-        <a class="btn" href="/?token=jc123">Volver</a>
+        <a class="btn" href="/{token_q}">Volver</a>
     </div>
 </div>
 </body>
@@ -1761,7 +1777,8 @@ def page_status():
         csv=CSV_FILE,
         logf=LOG_FILE,
         log_activo=guardado_activo,
-        lcd_activo=lcd_activo
+        lcd_activo=lcd_activo,
+        token_q=token_q
     )
 
 def json_status():
