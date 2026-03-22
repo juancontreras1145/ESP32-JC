@@ -15,6 +15,15 @@ import machine
 import ntptime
 from machine import Pin, I2C
 
+# ------------------------------
+# AUTO UPDATE
+# ------------------------------
+try:
+    import updater
+    updater.update()
+except Exception as e:
+    print("Updater error:", e)
+
 VERSION = "ESP32 JC Monitor v4"
 
 # -----------------------------
