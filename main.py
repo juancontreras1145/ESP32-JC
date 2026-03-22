@@ -1,321 +1,301 @@
 
 # =========================================
-# ESP32 JC Monitor v64
-# Integrado: interior + exterior + amaneciendo
-# logs + JSON + estado + CSV + LCD rotativo
+# ESP32 JC Monitor v70
+# Interior + Exterior + Amanecer + Consejos
 # =========================================
 
 import time
+import math
+import random
 import socket
 import network
 import dht
-import os
-import gc
-import math
 import machine
 import ntptime
-from machine import Pin, I2C
+import gc
+from machine import Pin
 
-# ------------------------------
-# AUTO UPDATE (seguro)
-# ------------------------------
-try:
-    import updater
-    updated = updater.update()
-    if updated:
-        machine.reset()
-except Exception as e:
-    print("Updater error:", e)
+VERSION = "ESP32 JC Monitor v70"
 
-VERSION = "ESP32 JC Monitor v64"
-
-# -----------------------------
-# CONFIG
-# -----------------------------
-LCD_SDA = 8
-LCD_SCL = 9
-LCD_ADDR = 0x27
+# ---------------- CONFIG ----------------
 
 DHT_PIN = 4
-
-CSV_FILE = "temperaturas.csv"
-LOG_FILE = "main.log"
-
-INTERVALO_GUARDADO = 600
-INTERVALO_EXTERIOR = 1800
-TIMEOUT_WEB = 1
-REFRESCO_WEB = 12
-PAUSA_LCD_BOOT = 1.2
-ROTACION_LCD_SEG = 3
-
-UTC_OFFSET_HORAS = -3
-
 LAT = -33.0475
 LON = -71.4425
 UBICACION = "Quilpue, Valparaiso"
 
-# -----------------------------
-# ESTADO
-# -----------------------------
-inicio_epoch = time.time()
+# ----------------------------------------
 
-temperatura_actual = None
-humedad_actual = None
+sensor = dht.DHT22(Pin(DHT_PIN))
+
+temp_hist = []
+hum_hist = []
 
 temp_ext = None
 hum_ext = None
 
-wifi_ip = "Sin WiFi"
+# ---------- CONSEJOS TEMPERATURA --------
 
-sensor = None
-lcd = None
-server = None
+def consejo_temp(t):
 
-# -----------------------------
-# HELPERS
-# -----------------------------
+    if t < 8:
+        frases = [
+        "Frio extremo",
+        "Abrigo obligatorio",
+        "Ambiente muy frio",
+        "Calefaccion recomendada"
+        ]
 
-def fmt(x):
-    if x is None:
-        return "--.-"
-    try:
-        return "{:.1f}".format(float(x))
-    except:
-        return "--.-"
+    elif t < 14:
+        frases = [
+        "Frio sostenido",
+        "Ambiente frio",
+        "Abrigo recomendado",
+        "Clima frio moderado"
+        ]
 
-def clamp(text,n=16):
-    t=str(text)
-    if len(t)<=n:
-        return t
-    return t[:n]
+    elif t < 20:
+        frases = [
+        "Ambiente fresco",
+        "Temperatura estable",
+        "Clima agradable",
+        "Condiciones neutrales"
+        ]
 
-def now():
-    return int(time.time())
+    elif t < 26:
+        frases = [
+        "Ambiente templado",
+        "Clima confortable",
+        "Condiciones optimas",
+        "Temperatura ideal"
+        ]
 
-# -----------------------------
-# LOGS
-# -----------------------------
+    else:
+        frases = [
+        "Ambiente calido",
+        "Calor moderado",
+        "Ventilacion recomendada",
+        "Alta temperatura"
+        ]
 
-def append_log(msg):
-    try:
-        line="{} {}\n".format(now(),msg)
-        with open(LOG_FILE,"a") as f:
-            f.write(line)
-    except:
-        pass
+    return random.choice(frases)
 
-def read_logs():
-    try:
-        if LOG_FILE in os.listdir():
-            with open(LOG_FILE,"r") as f:
-                return f.read()
-    except:
-        pass
-    return "Sin logs"
 
-# -----------------------------
-# WIFI
-# -----------------------------
+# ---------- CONFORT ---------------------
 
-def refresh_ip():
-    global wifi_ip
-    try:
-        wlan=network.WLAN(network.STA_IF)
-        if wlan.isconnected():
-            wifi_ip=wlan.ifconfig()[0]
-    except:
-        pass
+def confort(temp, hum):
 
-# -----------------------------
-# LCD
-# -----------------------------
+    if temp < 14:
+        return "Frio"
 
-def init_lcd():
-    global lcd
-    try:
-        from lcd import LCD
-        i2c=I2C(0,sda=Pin(LCD_SDA),scl=Pin(LCD_SCL))
-        lcd=LCD(i2c,LCD_ADDR,cols=16,rows=2)
-        lcd.clear()
-    except Exception as e:
-        append_log("LCD error {}".format(e))
+    if temp < 22 and hum < 70:
+        return "Regular"
 
-def lcd_msg(l1,l2):
-    try:
-        lcd.message(clamp(l1,16),clamp(l2,16))
-    except:
-        pass
+    if temp < 26 and hum < 60:
+        return "Confortable"
 
-# -----------------------------
-# SENSOR
-# -----------------------------
+    return "Caluroso"
 
-def init_sensor():
-    global sensor
-    try:
-        sensor=dht.DHT22(Pin(DHT_PIN))
-    except Exception as e:
-        append_log("Sensor init error {}".format(e))
 
-def read_sensor():
-    global temperatura_actual,humedad_actual
-    try:
-        sensor.measure()
-        temperatura_actual=round(sensor.temperature(),1)
-        humedad_actual=round(sensor.humidity(),1)
-        return True
-    except Exception as e:
-        append_log("Sensor read error {}".format(e))
-        return False
+# ---------- PUNTO ROCIO -----------------
 
-# -----------------------------
-# EXTERIOR
-# -----------------------------
+def punto_rocio(t, h):
 
-def fetch_weather():
-    global temp_ext,hum_ext
-    try:
-        import urequests
+    a = 17.27
+    b = 237.7
 
-        url="http://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,relative_humidity_2m".format(LAT,LON)
+    alpha = ((a * t) / (b + t)) + math.log(h/100.0)
+    dew = (b * alpha) / (a - alpha)
 
-        r=urequests.get(url)
-        data=r.json()
-        r.close()
+    return round(dew,1)
 
-        c=data.get("current",{})
-        temp_ext=c.get("temperature_2m")
-        hum_ext=c.get("relative_humidity_2m")
 
-        append_log("Exterior actualizado")
+# ---------- AMANECER --------------------
 
-    except Exception as e:
-        append_log("Exterior error {}".format(e))
+def donde_amaneciendo(hora):
 
-# -----------------------------
-# WEB
-# -----------------------------
+    if 18 <= hora <= 20:
+        return "Nueva Zelanda"
 
-def page_home():
-    return """
+    if 20 <= hora <= 22:
+        return "Australia"
+
+    if 22 <= hora <= 0:
+        return "Indonesia"
+
+    if 0 <= hora <= 2:
+        return "India"
+
+    if 2 <= hora <= 4:
+        return "Medio Oriente"
+
+    if 4 <= hora <= 6:
+        return "Europa"
+
+    if 6 <= hora <= 8:
+        return "Africa"
+
+    if 8 <= hora <= 10:
+        return "Atlantico"
+
+    if 10 <= hora <= 12:
+        return "Sudamerica"
+
+    return "Pacifico"
+
+
+# ---------- SENSOR ----------------------
+
+def leer_sensor():
+
+    sensor.measure()
+    t = round(sensor.temperature(),1)
+    h = round(sensor.humidity(),1)
+
+    temp_hist.append(t)
+    hum_hist.append(h)
+
+    if len(temp_hist) > 200:
+        temp_hist.pop(0)
+        hum_hist.pop(0)
+
+    return t,h
+
+
+# ---------- ESTADISTICAS ----------------
+
+def stats():
+
+    if len(temp_hist) == 0:
+        return 0,0,0
+
+    tmin = min(temp_hist)
+    tmax = max(temp_hist)
+    tavg = round(sum(temp_hist)/len(temp_hist),1)
+
+    return tmin,tmax,tavg
+
+
+# ---------- WEB SERVER ------------------
+
+def pagina(t,h):
+
+    dew = punto_rocio(t,h)
+    conf = confort(t,h)
+    consejo = consejo_temp(t)
+
+    hora = time.localtime()[3]
+    amanecer = donde_amaneciendo(hora)
+
+    tmin,tmax,tavg = stats()
+
+    html = f"""
     <html>
     <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="12">
+    <meta http-equiv="refresh" content="10">
     </head>
     <body style="background:#0b1a2e;color:white;font-family:Arial">
 
-    <h2>ESP32 JC Monitor v64</h2>
+    <h2>{VERSION}</h2>
 
-    <p>IP: {}</p>
+    <p>Ubicacion: {UBICACION}</p>
 
     <h3>Interior</h3>
-    <p>{} C</p>
-    <p>Humedad {} %</p>
+    <p>{t} C</p>
+    <p>Humedad {h} %</p>
 
     <h3>Exterior</h3>
-    <p>{} C</p>
-    <p>Humedad {} %</p>
+    <p>{temp_ext} C</p>
+    <p>Humedad {hum_ext} %</p>
 
-    <p><a href="/logs">Ver logs</a></p>
+    <h3>Confort</h3>
+    <p>{conf}</p>
+
+    <h3>Punto de rocio</h3>
+    <p>{dew} C</p>
+
+    <h3>Consejo</h3>
+    <p>{consejo}</p>
+
+    <h3>Donde esta amaneciendo</h3>
+    <p>{amanecer}</p>
+
+    <h3>Estadisticas</h3>
+    <p>Min {tmin} C</p>
+    <p>Max {tmax} C</p>
+    <p>Prom {tavg} C</p>
 
     </body>
     </html>
-    """.format(
-        wifi_ip,
-        fmt(temperatura_actual),
-        fmt(humedad_actual),
-        fmt(temp_ext),
-        fmt(hum_ext)
-    )
+    """
 
-def page_logs():
-    return """
-    <html>
-    <body>
-    <h2>Logs del sistema</h2>
-    <pre>{}</pre>
-    <a href="/">Volver</a>
-    </body>
-    </html>
-    """.format(read_logs())
+    return html
 
-# -----------------------------
-# SERVER
-# -----------------------------
 
-def init_server():
-    global server
-    addr=socket.getaddrinfo("0.0.0.0",80)[0][-1]
-    server=socket.socket()
-    server.bind(addr)
-    server.listen(5)
+# ---------- WIFI ------------------------
 
-def handle_web():
-    cl,addr=server.accept()
-    req=cl.recv(1024)
-    req=str(req)
+def conectar_wifi():
 
-    path="/"
-    try:
-        path=req.split(" ")[1]
-    except:
-        pass
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
 
-    if path=="/logs":
-        body=page_logs()
-    else:
-        body=page_home()
+    if not wlan.isconnected():
+        wlan.connect("S25","12345678")
 
-    cl.send("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n")
-    cl.send(body)
-    cl.close()
+        while not wlan.isconnected():
+            time.sleep(1)
 
-# -----------------------------
-# ARRANQUE
-# -----------------------------
+    return wlan.ifconfig()[0]
 
-append_log("Inicio {}".format(VERSION))
 
-init_lcd()
-lcd_msg("ESP32 JC","Iniciando")
+# ---------- SERVIDOR --------------------
 
-init_sensor()
+def iniciar_server():
 
-refresh_ip()
+    addr = socket.getaddrinfo("0.0.0.0",80)[0][-1]
 
-init_server()
+    s = socket.socket()
+    s.bind(addr)
+    s.listen(5)
 
-read_sensor()
-fetch_weather()
+    return s
 
-lcd_msg("Interior {}".format(fmt(temperatura_actual)),"Hum {}%".format(fmt(humedad_actual)))
 
-# -----------------------------
-# LOOP
-# -----------------------------
+# ---------- MAIN ------------------------
 
-last_ext=0
+ip = conectar_wifi()
+
+print("IP:",ip)
+
+try:
+    ntptime.settime()
+except:
+    pass
+
+server = iniciar_server()
+
+print("Servidor listo")
 
 while True:
 
     try:
 
-        handle_web()
+        t,h = leer_sensor()
 
-        if now()-last_ext>INTERVALO_EXTERIOR:
-            fetch_weather()
-            last_ext=now()
+        cl, addr = server.accept()
 
-        read_sensor()
+        req = cl.recv(1024)
 
-        lcd_msg(
-            "Interior {} C".format(fmt(temperatura_actual)),
-            "Hum {}%".format(fmt(humedad_actual))
-        )
+        response = pagina(t,h)
 
-        time.sleep(2)
+        cl.send('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
+        cl.send(response)
+        cl.close()
+
+        gc.collect()
 
     except Exception as e:
-        append_log("Loop error {}".format(e))
+
+        print("error:",e)
         time.sleep(2)
