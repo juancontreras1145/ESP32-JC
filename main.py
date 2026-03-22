@@ -15,7 +15,7 @@ import machine
 import ntptime
 from machine import Pin, I2C
 
-VERSION = "ESP32 JC Monitor v2"
+VERSION = "ESP32 JC Monitor v3"
 
 # -----------------------------
 # CONFIG
@@ -110,6 +110,13 @@ lcd_activo = True
 sensor = None
 lcd = None
 server = None
+
+# cache de consejos / amanecer
+ultimo_consejo = ""
+consejo_lcd_cache = ""
+sunrise_places_cache = ""
+sunrise_label_cache = ""
+jornada_cache = ""
 
 # -----------------------------
 # HELPERS
@@ -768,35 +775,416 @@ def compare_inside_outside():
         return "Ambiente parecido"
     return "Evaluar ventana"
 
-def sunrise_region():
-    # Aproximacion simple segun hora UTC real
+def jornada_actual():
     try:
-        t_utc = time.localtime(now_epoch())
-        h = t_utc[3]
+        h = local_tuple()[3]
     except:
         h = 0
 
-    zonas = [
-        "Pacifico",          # 00-01
-        "Nueva Zelanda",     # 02-03
-        "Australia",         # 04-05
-        "Indonesia",         # 06-07
-        "China",             # 08-09
-        "India",             # 10-11
-        "Medio Oriente",     # 12-13
-        "Europa",            # 14-15
-        "Africa",            # 16-17
-        "Atlantico",         # 18-19
-        "Sudamerica",        # 20-21
-        "Pacifico",          # 22-23
+    if 5 <= h <= 7:
+        return "Amanecer"
+    if 8 <= h <= 11:
+        return "Manana"
+    if 12 <= h <= 14:
+        return "Mediodia"
+    if 15 <= h <= 18:
+        return "Tarde"
+    if 19 <= h <= 22:
+        return "Noche"
+    return "Madrugada"
+
+def sunrise_places():
+    # 24 franjas UTC con varios paises/ciudades donde puede estar amaneciendo aprox.
+    try:
+        h = time.localtime(now_epoch())[3]
+    except:
+        h = 0
+
+    fr = [
+        ("Pacifico Este", "Samoa, Tonga, Kiribati, Fiji"),
+        ("Oceania", "Auckland, Wellington, Fiji, Samoa"),
+        ("NZ / Pacifico", "Nueva Zelanda, Chatham, Fiji, Tonga"),
+        ("Australia Este", "Sydney, Melbourne, Brisbane, Hobart"),
+        ("Australia", "Canberra, Gold Coast, Adelaide, Darwin"),
+        ("Asia Sur-Este", "Papua, Guam, Japon Sur, Filipinas"),
+        ("Asia Oriental", "Tokio, Osaka, Seul, Taipei"),
+        ("China / Japon", "Shanghai, Beijing, Hong Kong, Okinawa"),
+        ("Sudeste Asiatico", "Bangkok, Hanoi, Manila, Kuala Lumpur"),
+        ("SE Asia", "Singapur, Yakarta, Bali, Ho Chi Minh"),
+        ("Asia del Sur", "Calcuta, Daca, Katmandu, Colombo"),
+        ("India / Centro Asia", "Nueva Delhi, Karachi, Lahore, Kabul"),
+        ("Medio Oriente", "Dubai, Abu Dhabi, Mascate, Teheran"),
+        ("Arabia / Africa Este", "Riad, Doha, Kuwait, Nairobi"),
+        ("Europa Este", "Atenas, Bucarest, Sofia, Estambul"),
+        ("Europa Central", "Roma, Berlin, Viena, Praga"),
+        ("Europa Oeste", "Madrid, Paris, Lisboa, Londres"),
+        ("Africa Oeste", "Casablanca, Dakar, Accra, Abiyan"),
+        ("Atlantico", "Azores, Cabo Verde, Madeira, Canarias"),
+        ("Sudamerica Este", "Sao Paulo, Rio, Montevideo, Buenos Aires"),
+        ("Cono Sur", "Santiago, Valparaiso, Mendoza, Cordoba"),
+        ("Andes / Caribe", "Lima, Quito, Bogota, La Paz"),
+        ("Norteamerica Este", "Miami, Nueva York, Toronto, Montreal"),
+        ("Norteamerica", "Chicago, Dallas, Ciudad de Mexico, Denver"),
+    ]
+    return fr[h % 24]
+
+def sunrise_region():
+    return sunrise_places()[0]
+
+def sunrise_places_text(max_len=None):
+    txt = sunrise_places()[1]
+    if max_len is not None:
+        return clamp_text(txt, max_len)
+    return txt
+
+def line_for_lcd(label, value, unit=""):
+    txt = "{} {}{}".format(label, fmt1(value), unit)
+    if len(txt) <= 16:
+        return txt
+    if "." in txt:
+        txt = "{} {}{}".format(label, fmt_int(value), unit)
+    return clamp_text(txt, 16)
+
+def consejo_lcd(texto):
+    s = str(texto).strip()
+    if len(s) <= 16:
+        return s
+    s = s.replace("temperatura", "temp")
+    s = s.replace("interior", "int")
+    s = s.replace("exterior", "ext")
+    s = s.replace("humedad", "hum")
+    s = s.replace("ventilacion", "ventila")
+    s = s.replace("hidratarse", "hidratar")
+    s = s.replace("descansa", "descanso")
+    s = s.replace("aprovecha", "usa")
+    s = s.replace("mantener", "mant")
+    s = s.replace("revisar", "revisa")
+    return clamp_text(s, 16)
+
+def construir_consejos():
+    jornada = jornada_actual()
+
+    consejos_base = {
+        "Madrugada": [
+            "Hora de descanso y silencio",
+            "Evita luz fuerte antes de dormir",
+            "Abriga si baja la temperatura",
+            "Ventila solo si afuera esta seco",
+            "Ideal para dejar todo listo",
+            "Momento de calma y orden",
+            "Baja el brillo de pantallas",
+            "Toma agua antes de dormir",
+            "Revisa si hay condensacion",
+            "Mantener ambiente estable ayuda",
+            "Si hace frio, cierra ventanas",
+            "Buena hora para descansar el cuerpo",
+            "Evita corrientes de aire frias",
+            "Ajusta ropa de cama segun clima",
+            "Cuida ruido y luz del espacio",
+            "Deja listo lo de la manana",
+            "No sobrecalientes la pieza",
+            "Evita humedad atrapada",
+            "Respira aire limpio y tranquilo",
+            "Descanso primero, pantalla despues",
+        ],
+        "Amanecer": [
+            "Empieza el dia con aire fresco",
+            "Buena hora para ventilar breve",
+            "Activa el cuerpo con calma",
+            "Revisa como amanecio la humedad",
+            "Luz natural ayuda a despertar",
+            "Aprovecha el aire de la manana",
+            "Ideal para ordenar el espacio",
+            "Buen momento para hidratarte",
+            "Ajusta ropa segun temperatura",
+            "Si afuera esta seco, ventila",
+            "Abre cortinas y deja entrar luz",
+            "Temperatura suave, arranque tranquilo",
+            "Una revision rapida del clima sirve",
+            "Rutina corta y constante funciona",
+            "Evita encierro si el aire esta pesado",
+            "Renueva el ambiente unos minutos",
+            "Observa si hay rocio o humedad",
+            "Comienza con ritmo parejo",
+            "Despierta con menos pantalla",
+            "Mueve el cuerpo aunque sea poco",
+        ],
+        "Manana": [
+            "Buena hora para tareas clave",
+            "Mantener orden ayuda al foco",
+            "Hidratarse mejora la jornada",
+            "Aprovecha la luz natural",
+            "Si hay humedad alta, ventila",
+            "Hora ideal para moverse un poco",
+            "Revisa confort antes de seguir",
+            "Evita calor acumulado temprano",
+            "Un ambiente fresco rinde mejor",
+            "Mantener aire limpio suma energia",
+            "Ajusta ventanas segun exterior",
+            "Haz pausas cortas cada cierto rato",
+            "Si el sol pega fuerte, modera entrada",
+            "Buena hora para avanzar fuerte",
+            "Evita ropa muy abrigada si ya sube",
+            "Controla temperatura antes del mediodia",
+            "Confort estable, mejor rendimiento",
+            "Ideal para comenzar tareas largas",
+            "Una mesa ordenada rinde mas",
+            "Menos calor, mas enfoque",
+        ],
+        "Mediodia": [
+            "Hora de pausa y recarga",
+            "Evita encierro con calor acumulado",
+            "Hidratarse ahora es clave",
+            "Si sube mucho la temperatura, baja actividad",
+            "Busca sombra o aire fresco",
+            "Revisa si conviene ventilar",
+            "Comer liviano ayuda al confort",
+            "No te olvides del agua",
+            "El calor del dia ya se nota",
+            "Buena hora para resetear el ambiente",
+            "Ajusta cortinas si entra mucho sol",
+            "Evita humedad atrapada al almuerzo",
+            "Pausa corta, energia mejor",
+            "Respira y afloja el ritmo",
+            "Si hay bochorno, mueve aire",
+            "Revisa interior versus exterior",
+            "No acumules calor innecesario",
+            "Manten circulacion de aire",
+            "Temperatura controlada, mejor descanso",
+            "Momento justo para una pausa",
+        ],
+        "Tarde": [
+            "Buen tramo para cerrar pendientes",
+            "Revisa si conviene ventilar otra vez",
+            "Si el ambiente carga, renuevalo",
+            "Mantener confort evita cansancio",
+            "Haz una pausa breve si baja energia",
+            "Controla calor acumulado de la tarde",
+            "El aire fresco ayuda a seguir",
+            "Buen momento para ordenar",
+            "Cierra el dia con ambiente comodo",
+            "Si afuera mejora, aprovecha ventilacion",
+            "Baja humedad si el exterior acompana",
+            "No dejes que el calor se quede",
+            "Revisa ventanas antes de anochecer",
+            "Estabilidad ambiental suma foco",
+            "Termina fuerte, pero sin sobrecarga",
+            "Acomoda el espacio para la noche",
+            "Evita encierro innecesario",
+            "Una vuelta de aire puede servir",
+            "Confort bueno, tarde mas liviana",
+            "Hora de afinar detalles",
+        ],
+        "Noche": [
+            "Baja el ritmo y ordena el ambiente",
+            "Ideal para dejar todo listo",
+            "Evita exceso de pantallas",
+            "Si hay humedad alta, ventila con criterio",
+            "Una temperatura templada ayuda",
+            "Hora de cerrar ventanas si enfria",
+            "Prepara un descanso comodo",
+            "Ambiente estable mejora la noche",
+            "No dejes calor encerrado",
+            "Menos ruido, mejor descanso",
+            "Revisa si se formo condensacion",
+            "Mantener calma ayuda a dormir",
+            "Luz tenue favorece el descanso",
+            "Ventila breve si afuera esta seco",
+            "No sobrecargues la pieza de calor",
+            "Ropa ligera si el interior esta tibio",
+            "Abriga si cae la temperatura",
+            "Una ultima revision del clima sirve",
+            "Momento de soltar la jornada",
+            "Respira profundo y baja cambios",
+        ],
+    }
+
+    extras_temp_frio = [
+        "Hace frio: abrigo liviano ayuda",
+        "Frio interior: mejor cerrar corrientes",
+        "Temperatura baja: evita piso frio",
+        "Si baja mas, suma una capa",
+        "Frio marcado: no ventiles mucho",
+        "Ambiente fresco: abriga pies y manos",
+        "Frio + humedad: cuidado con el cuerpo",
+        "Abriga sin encerrar humedad",
+        "No dejes ventanas abiertas de mas",
+        "Si el aire corta, cierra parcial",
+        "Templar un poco puede ayudar",
+        "Revisa si la sensacion es menor al dato",
+        "Con frio, una bebida tibia suma",
+        "Evita cambios bruscos de temperatura",
+        "Pieza fresca: confort puede caer",
+        "Controla corrientes cercanas",
+        "Frio temprano: parte con calma",
+        "Ajusta ropa antes de salir",
+        "Si el exterior esta peor, conserva calor",
+        "Frio sostenido: busca estabilidad",
     ]
 
-    idx = int(h / 2)
-    if idx < 0:
+    extras_temp_calor = [
+        "Hace calor: agua y aire fresco",
+        "Calor interior: baja esfuerzo un rato",
+        "Temperatura alta: busca sombra",
+        "Si afuera esta mejor, ventila",
+        "Calor + humedad: ambiente pesado",
+        "Bochorno: mover aire ayuda",
+        "Evita calor acumulado adentro",
+        "Ropa liviana mejora el confort",
+        "No cierres todo si falta aire",
+        "Calor fuerte: pausas cortas sirven",
+        "Revisa si pega sol directo",
+        "Ambiente caluroso: baja carga",
+        "Ventilar puede aliviar rapido",
+        "Calor seco: hidratarse mas",
+        "Calor humedo: prioriza aire",
+        "Si sube demasiado, baja actividad",
+        "Controla entrada de sol",
+        "No esperes a sentirte agotado",
+        "El confort cae con bochorno",
+        "En calor, menos encierro",
+    ]
+
+    extras_hum_baja = [
+        "Humedad baja: toma agua",
+        "Ambiente seco: cuida garganta",
+        "Puede resecar nariz y ojos",
+        "Ventila con moderacion si seca mas",
+        "El aire seco fatiga mas",
+        "Un paño humedo cerca puede ayudar",
+        "Evita resequedad prolongada",
+        "Controla labios y garganta",
+        "Humedad baja: confort irregular",
+        "No abuses de aire muy seco",
+        "Seco adentro: hidrata y descansa",
+        "Puede sentirse frio mas facil",
+        "Ambiente seco pide mas agua",
+        "Revisa si la ventilacion seca de mas",
+        "La resequedad tambien molesta",
+        "Mantener equilibrio ayuda",
+        "Poca humedad no siempre es mejor",
+        "Ojo con polvo en ambiente seco",
+        "Puede irritar si dura mucho",
+        "Compensa con hidratacion",
+    ]
+
+    extras_hum_alta = [
+        "Humedad alta: ojo con bochorno",
+        "Ambiente humedo: ventila si se puede",
+        "Puede aparecer condensacion",
+        "Humedo adentro: revisa ventanas",
+        "Si afuera esta seco, aprovecha",
+        "Humedad alta baja el confort",
+        "No dejes aire estancado",
+        "Ventilar corto puede ayudar",
+        "Exceso de humedad pesa en el cuerpo",
+        "Observa paredes y vidrios",
+        "Humedo y tibio: combinacion pesada",
+        "Conviene mover aire",
+        "No cierres todo si ya esta cargado",
+        "Revisa punto de rocio",
+        "Ambiente humedo: menos comodidad",
+        "Si hay olor a encierro, renueva",
+        "Humedo constante requiere control",
+        "Ojo con ropa y telas humedas",
+        "Puede sentirse mas calor del real",
+        "No ignores la humedad alta",
+    ]
+
+    extras_compare = [
+        "Interior mejor que exterior: conserva",
+        "Exterior mejor: podria convenir ventilar",
+        "Ambientes parecidos: sin apuro",
+        "Afuera muy humedo: ventilar con criterio",
+        "Afuera mas fresco: revisa ventana",
+        "Afuera mas calido: evita meter calor",
+        "Compara antes de abrir todo",
+        "Unos minutos pueden bastar",
+        "Si afuera ayuda, aprovecha",
+        "Si afuera empeora, espera",
+        "Ventilar no siempre mejora",
+        "Primero compara, luego decide",
+        "El exterior manda la estrategia",
+        "Abrir de mas puede jugar en contra",
+        "Busca equilibrio, no extremos",
+        "Con diferencia minima, no apures",
+        "El punto de rocio tambien importa",
+        "Interior y exterior deben leerse juntos",
+        "No te guies solo por temperatura",
+        "La humedad cambia la jugada",
+    ]
+
+    extras_riesgo = [
+        "Riesgo bajo: ambiente controlado",
+        "Riesgo medio: revisa ventilacion",
+        "Riesgo alto: ojo con condensacion",
+        "Si ves vidrio empañado, actua",
+        "El punto de rocio orienta bien",
+        "Condensacion puede aparecer sin aviso",
+        "Mejor prevenir que encerrar humedad",
+        "Riesgo alto pide revision rapida",
+        "Observa rincones frios",
+        "Ambiente estable reduce riesgo",
+        "Menos humedad, menos problema",
+        "El calor con humedad complica",
+        "Si enfria de golpe, revisa",
+        "Riesgo medio no conviene ignorarlo",
+        "Unos minutos de aire pueden salvar",
+        "No subestimes el rocio interior",
+        "Control fino evita sorpresas",
+        "Ventana correcta, mejor resultado",
+        "El clima exterior cambia el riesgo",
+        "Mira el confort junto al rocio",
+    ]
+
+    base = list(consejos_base.get(jornada, []))
+
+    try:
+        if temperatura_actual is not None:
+            if temperatura_actual < 18:
+                base.extend(extras_temp_frio)
+            elif temperatura_actual > 27:
+                base.extend(extras_temp_calor)
+            else:
+                base.extend(extras_temp_frio[:10])
+                base.extend(extras_temp_calor[:10])
+    except:
+        pass
+
+    try:
+        if humedad_actual is not None:
+            if humedad_actual < 40:
+                base.extend(extras_hum_baja)
+            elif humedad_actual > 70:
+                base.extend(extras_hum_alta)
+            else:
+                base.extend(extras_hum_baja[:10])
+                base.extend(extras_hum_alta[:10])
+    except:
+        pass
+
+    base.extend(extras_compare)
+    base.extend(extras_riesgo)
+
+    try:
+        reg, lugares = sunrise_places()
+        base.append("Amaneciendo en {}".format(reg))
+        base.append("Pista solar: {}".format(lugares))
+    except:
+        pass
+
+    base.append("Jornada actual: {}".format(jornada))
+    return base
+
+def consejo_actual():
+    consejos = construir_consejos()
+    if not consejos:
+        return "Sin consejo"
+    try:
+        idx = (local_epoch() // ROTACION_LCD_SEG) % len(consejos)
+    except:
         idx = 0
-    if idx >= len(zonas):
-        idx = len(zonas) - 1
-    return zonas[idx]
+    return consejos[int(idx)]
 
 # -----------------------------
 # CSV
@@ -917,6 +1305,7 @@ def stats():
 # -----------------------------
 def rotate_lcd(force=False):
     global ultimo_cambio_lcd, indice_lcd
+    global ultimo_consejo, consejo_lcd_cache, sunrise_places_cache, sunrise_label_cache, jornada_cache
 
     if not lcd_activo or lcd is None:
         return
@@ -926,22 +1315,36 @@ def rotate_lcd(force=False):
         return
 
     ultimo_cambio_lcd = ahora
+    ultimo_consejo = consejo_actual()
+    consejo_lcd_cache = consejo_lcd(ultimo_consejo)
+    sunrise_label_cache = sunrise_region()
+    sunrise_places_cache = sunrise_places_text()
+    jornada_cache = jornada_actual()
 
     screens = [
-        ("Int {}C".format(fmt1(temperatura_actual)),
-         "Hum {}%".format(fmt1(humedad_actual))),
+        (line_for_lcd("Interior", temperatura_actual, "°"),
+         line_for_lcd("Humedad", humedad_actual, "%")),
 
-        ("Ext {}C".format(fmt1(temp_ext)),
-         "Hum {}%".format(fmt1(hum_ext))),
+        (line_for_lcd("Exterior", temp_ext, "°"),
+         line_for_lcd("Humedad", hum_ext, "%")),
 
         ("Confort",
-         comfort(temperatura_actual, humedad_actual)),
+         clamp_text(comfort(temperatura_actual, humedad_actual), 16)),
 
         ("Comparacion",
          clamp_text(compare_inside_outside(), 16)),
 
-        ("Amanece en",
-         clamp_text(sunrise_region(), 16)),
+        ("Amanecer",
+         clamp_text(sunrise_label_cache, 16)),
+
+        ("Paises",
+         clamp_text(sunrise_places_cache, 16)),
+
+        ("Jornada",
+         clamp_text(jornada_cache, 16)),
+
+        ("Consejo",
+         consejo_lcd_cache),
 
         ("Hora " + hora_texto()[:8],
          clamp_text(wifi_ip, 16)),
@@ -952,7 +1355,7 @@ def rotate_lcd(force=False):
 
     a, b = screens[indice_lcd]
 
-    if indice_lcd in (2, 3, 4):
+    if indice_lcd in (2, 3, 4, 5, 6, 7):
         lcd_msg(a, b, 0, True)
     else:
         lcd_msg(a, b)
@@ -1126,11 +1529,18 @@ def page_home(full=False):
         <div class="card">
             <div class="sub">Donde esta amaneciendo</div>
             <div class="big">{sun_region}</div>
+            <div class="sub">{sun_places}</div>
         </div>
         <div class="card">
             <div class="sub">Sol local</div>
             <div class="big">↑ {sunrise} / ↓ {sunset}</div>
         </div>
+    </div>
+
+    <div class="card">
+        <div class="title" style="font-size:20px;">Consejo del momento</div>
+        <div class="big">{advice}</div>
+        <div class="sub">Jornada: {jornada}</div>
     </div>
 
     <div class="card">
@@ -1208,6 +1618,9 @@ def page_home(full=False):
         compare=html_escape(compare_inside_outside()),
         cold=html_escape(cold_state(temperatura_actual, humedad_actual)),
         sun_region=html_escape(sunrise_region()),
+        sun_places=html_escape(sunrise_places_text()),
+        advice=html_escape(consejo_actual()),
+        jornada=html_escape(jornada_actual()),
         sunrise=html_escape(sunrise_ext),
         sunset=html_escape(sunset_ext),
         alerts=alerts_html,
@@ -1363,7 +1776,10 @@ def json_status():
   "analysis": {{
     "compare": "{compare}",
     "condensation_risk": "{cond}",
-    "sunrise_region": "{sun_region}"
+    "sunrise_region": "{sun_region}",
+    "sunrise_places": "{sun_places}",
+    "jornada": "{jornada}",
+    "advice": "{advice}"
   }},
   "status": {{
     "sensor_ok": {sensor_ok},
@@ -1398,6 +1814,9 @@ def json_status():
         compare=json_escape(compare_inside_outside()),
         cond=json_escape(detect_condensation_risk()),
         sun_region=json_escape(sunrise_region()),
+        sun_places=json_escape(sunrise_places_text()),
+        jornada=json_escape(jornada_actual()),
+        advice=json_escape(consejo_actual()),
         sensor_ok=to_bool_text(sensor_ok),
         wifi_ok=to_bool_text(wifi_conectado()),
         ntp_ok=to_bool_text(ntp_ok),
