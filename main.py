@@ -15,7 +15,7 @@ import machine
 import ntptime
 from machine import Pin, I2C
 
-VERSION = "ESP32 JC Monitor v62"
+VERSION = "ESP32 JC Monitor v2"
 
 # -----------------------------
 # CONFIG
@@ -50,6 +50,9 @@ HUM_BAJA = 40.0
 HUM_ALTA = 70.0
 
 MAX_LOG_LINES = 220
+MAX_CSV_LINES = 1440
+WEB_TOKEN = "jc123"
+ENABLE_FULL_HOME = False
 
 # Ubicacion fija por defecto
 LAT = -33.0475
@@ -188,6 +191,128 @@ def clamp_text(text, n=16):
     if len(s) <= n:
         return s
     return s[:n]
+
+
+def html_escape(s):
+    try:
+        s = str(s)
+        s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        return s
+    except:
+        return ""
+
+def json_escape(s):
+    try:
+        s = str(s)
+        s = s.replace('\\', '\\\\').replace('"', '\"').replace('\n', ' ').replace('\r', ' ')
+        return s
+    except:
+        return ""
+        return ""
+
+def to_bool_text(v):
+    return "true" if v else "false"
+
+def to_json_number(v):
+    if v is None:
+        return "null"
+    try:
+        return str(round(float(v), 1))
+    except:
+        return "null"
+
+def route_path(req):
+    try:
+        line = req.split("\r\n")[0]
+        parts = line.split(" ")
+        if len(parts) >= 2:
+            return parts[1]
+    except:
+        pass
+    return "/"
+
+def split_path_query(path):
+    try:
+        if "?" in path:
+            p, q = path.split("?", 1)
+        else:
+            p, q = path, ""
+        args = {}
+        if q:
+            for pair in q.split("&"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                else:
+                    k, v = pair, ""
+                args[k] = v
+        return p, args
+    except:
+        return path, {}
+
+def auth_ok(args):
+    if WEB_TOKEN == "":
+        return True
+    try:
+        return args.get("token", "") == WEB_TOKEN
+    except:
+        return False
+
+def protected_path(path):
+    return path in (
+        "/leer", "/actualizar_exterior", "/sync_time", "/borrar_csv",
+        "/borrar_logs", "/toggle_log", "/lcd_on", "/lcd_off", "/reiniciar"
+    )
+
+def maybe_rotate_csv():
+    try:
+        if not exists_file(CSV_FILE):
+            return
+        with open(CSV_FILE, "r") as f:
+            lines = f.readlines()
+        if len(lines) <= MAX_CSV_LINES:
+            return
+        fecha = fecha_texto().replace("-", "")
+        backup = "temperaturas_" + fecha + ".csv"
+        i = 1
+        while exists_file(backup):
+            backup = "temperaturas_" + fecha + "_" + str(i) + ".csv"
+            i += 1
+        with open(backup, "w") as fb:
+            for line in lines:
+                fb.write(line)
+        ensure_csv()
+        append_log("CSV rotado a " + backup)
+    except Exception as e:
+        append_log("CSV rotate error: {}".format(e), "WARN")
+
+def detect_condensation_risk():
+    dp_in = dew_point(temperatura_actual, humedad_actual)
+    dp_out = dew_point(temp_ext, hum_ext)
+    if dp_in is None:
+        return "Sin datos"
+    try:
+        if dp_in >= 18:
+            return "Alto"
+        if dp_out is not None and dp_out + 1 < dp_in and hum_ext is not None and hum_ext < 75:
+            return "Baja al ventilar"
+        if dp_in >= 15:
+            return "Medio"
+        return "Bajo"
+    except:
+        return "Sin datos"
+
+def compact_series(values, n=18):
+    if not values:
+        return []
+    if len(values) <= n:
+        return values
+    step = len(values) / float(n)
+    out = []
+    i = 0.0
+    while int(i) < len(values) and len(out) < n:
+        out.append(values[int(i)])
+        i += step
+    return out[:n]
 
 # -----------------------------
 # LOGS
@@ -481,43 +606,61 @@ def fetch_weather_outside():
 
     try:
         r = urequests.get(url)
-        txt = r.text
+        txt = None
         try:
-            r.close()
+            data = r.json()
         except:
-            pass
+            data = None
+            try:
+                txt = r.text
+            except:
+                txt = ""
+        finally:
+            try:
+                r.close()
+            except:
+                pass
 
-        txt = _find_json_body(txt)
+        if data is None:
+            txt = _find_json_body(txt)
+            temp_ext = _parse_number_after('"temperature_2m":', txt)
+            hum_ext = _parse_number_after('"relative_humidity_2m":', txt)
+            wind_ext = _parse_number_after('"wind_speed_10m":', txt)
+            rain_ext = _parse_number_after('"precipitation":', txt)
+            cloud_ext = _parse_number_after('"cloud_cover":', txt)
+            weather_code_ext = _parse_number_after('"weather_code":', txt)
+            sr = _parse_first_from_array('"sunrise":["', txt)
+            ss = _parse_first_from_array('"sunset":["', txt)
+        else:
+            current = data.get("current", {})
+            daily = data.get("daily", {})
+            temp_ext = current.get("temperature_2m")
+            hum_ext = current.get("relative_humidity_2m")
+            wind_ext = current.get("wind_speed_10m")
+            rain_ext = current.get("precipitation")
+            cloud_ext = current.get("cloud_cover")
+            weather_code_ext = current.get("weather_code")
+            sr_arr = daily.get("sunrise", [])
+            ss_arr = daily.get("sunset", [])
+            sr = sr_arr[0] if sr_arr else None
+            ss = ss_arr[0] if ss_arr else None
 
-        # current
-        temp_ext = _parse_number_after('"temperature_2m":', txt)
-        hum_ext = _parse_number_after('"relative_humidity_2m":', txt)
-        wind_ext = _parse_number_after('"wind_speed_10m":', txt)
-        rain_ext = _parse_number_after('"precipitation":', txt)
-        cloud_ext = _parse_number_after('"cloud_cover":', txt)
-        weather_code_ext = _parse_number_after('"weather_code":', txt)
-
-        # daily arrays
-        sr = _parse_first_from_array('"sunrise":["', txt)
-        ss = _parse_first_from_array('"sunset":["', txt)
-
-        if sr and "T" in sr:
-            sunrise_ext = sr.split("T")[1][:5]
+        if sr and "T" in str(sr):
+            sunrise_ext = str(sr).split("T")[1][:5]
         elif sr:
-            sunrise_ext = sr[:5]
+            sunrise_ext = str(sr)[:5]
         else:
             sunrise_ext = "--:--"
 
-        if ss and "T" in ss:
-            sunset_ext = ss.split("T")[1][:5]
+        if ss and "T" in str(ss):
+            sunset_ext = str(ss).split("T")[1][:5]
         elif ss:
-            sunset_ext = ss[:5]
+            sunset_ext = str(ss)[:5]
         else:
             sunset_ext = "--:--"
 
         last_ext_update = now_epoch()
         ext_error = "Ninguno"
-
         append_log("Clima exterior actualizado")
         return True
 
@@ -610,9 +753,13 @@ def compare_inside_outside():
         return "Sin comparacion"
 
     diff = round(temperatura_actual - temp_ext, 1)
+    dp_in = dew_point(temperatura_actual, humedad_actual)
+    dp_out = dew_point(temp_ext, hum_ext)
 
     if temp_ext + 1 < temperatura_actual and hum_ext is not None and hum_ext <= 75:
-        return "Conviene ventilar"
+        if dp_in is not None and dp_out is not None and dp_out + 1 < dp_in:
+            return "Conviene ventilar"
+        return "Ventilar con revision"
     if temp_ext > temperatura_actual + 1:
         return "Afuera mas calido"
     if hum_ext is not None and hum_ext > 80:
@@ -670,6 +817,7 @@ def save_csv(temp, hum):
         return False
 
     try:
+        maybe_rotate_csv()
         fecha, hora = local_dt()
         dp = dew_point(temp, hum)
         c = comfort(temp, hum)
@@ -819,98 +967,24 @@ def rotate_lcd(force=False):
 def style_base():
     return """
     <style>
-    body {
-        font-family: Arial, sans-serif;
-        background: #07111f;
-        color: #eef4ff;
-        margin: 0;
-        padding: 16px;
-    }
-    .wrap {
-        max-width: 1100px;
-        margin: auto;
-    }
-    .card {
-        background: #0d1b2a;
-        border: 1px solid #1f4f88;
-        border-radius: 18px;
-        padding: 18px;
-        margin-bottom: 16px;
-        box-shadow: 0 0 0 1px rgba(90,140,220,0.05);
-    }
-    .title {
-        font-size: 30px;
-        font-weight: bold;
-        margin-bottom: 10px;
-        color: #f2f7ff;
-    }
-    .sub {
-        color: #b7c8e6;
-        font-size: 14px;
-        margin-bottom: 4px;
-    }
-    .grid2 {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-    }
-    .grid3 {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 12px;
-    }
-    .big {
-        font-size: 48px;
-        font-weight: bold;
-        color: #ffffff;
-    }
-    .ok { color: #66e3a3; font-weight: bold; }
-    .bad { color: #ff7b7b; font-weight: bold; }
-    .btn {
-        display: inline-block;
-        padding: 12px 16px;
-        background: #295a96;
-        color: #eef6ff;
-        text-decoration: none;
-        border-radius: 12px;
-        font-weight: bold;
-        margin-right: 8px;
-        margin-top: 8px;
-        border: 1px solid #4f86c6;
-    }
-    .btn2 {
-        background: #162b45;
-        color: #dfeaff;
-    }
-    .mono {
-        font-family: monospace;
-        background: #040b16;
-        padding: 10px;
-        border-radius: 10px;
-        white-space: pre-wrap;
-        overflow-wrap: break-word;
-    }
-    .pill {
-        display: inline-block;
-        margin: 4px 6px 0 0;
-        padding: 8px 12px;
-        border-radius: 999px;
-        font-size: 13px;
-        font-weight: bold;
-    }
-    .alert {
-        background: #5f1d2a;
-        color: #ffd5db;
-    }
-    .okpill {
-        background: #153247;
-        color: #cfe8ff;
-    }
-    @media (max-width: 700px) {
-        .grid2, .grid3 {
-            grid-template-columns: 1fr;
-        }
-    }
+    body{font-family:Arial,sans-serif;background:#07111f;color:#eef4ff;margin:0;padding:12px}
+    .wrap{max-width:980px;margin:auto}
+    .card{background:#0d1b2a;border:1px solid #1f4f88;border-radius:14px;padding:14px;margin-bottom:12px}
+    .title{font-size:24px;font-weight:bold;margin-bottom:8px;color:#f2f7ff}
+    .sub{color:#b7c8e6;font-size:14px;margin-bottom:4px}
+    .grid2,.grid3{display:grid;gap:12px}
+    .grid2{grid-template-columns:1fr 1fr}
+    .grid3{grid-template-columns:1fr 1fr 1fr}
+    .big{font-size:34px;font-weight:bold;color:#ffffff}
+    .ok{color:#66e3a3;font-weight:bold}
+    .bad{color:#ff7b7b;font-weight:bold}
+    .btn{display:inline-block;padding:10px 12px;background:#295a96;color:#eef6ff;text-decoration:none;border-radius:10px;font-weight:bold;margin-right:6px;margin-top:6px;border:1px solid #4f86c6}
+    .btn2{background:#162b45;color:#dfeaff}
+    .mono{font-family:monospace;background:#040b16;padding:8px;border-radius:10px;white-space:pre-wrap;overflow-wrap:break-word}
+    .pill{display:inline-block;margin:4px 6px 0 0;padding:7px 10px;border-radius:999px;font-size:13px;font-weight:bold}
+    .alert{background:#5f1d2a;color:#ffd5db}
+    .okpill{background:#153247;color:#cfe8ff}
+    @media (max-width:700px){.grid2,.grid3{grid-template-columns:1fr}}
     </style>
     """
 
@@ -956,20 +1030,29 @@ def svg_series(values, title="Serie", color="#79afff", alto=180, ancho=800):
         tx=ancho - 140
     )
 
-def page_home():
+def page_home(full=False):
     st = stats()
     rows = parse_csv_rows()
     al = alerts(temperatura_actual, humedad_actual)
     rssi = wifi_rssi()
 
     alerts_html = "".join(
-        '<div class="pill alert">{}</div>'.format(x) if x != "Ninguna"
-        else '<div class="pill okpill">{}</div>'.format(x)
+        '<div class="pill alert">{}</div>'.format(html_escape(x)) if x != "Ninguna"
+        else '<div class="pill okpill">{}</div>'.format(html_escape(x))
         for x in al
     )
 
-    temps = [x["temp"] for x in rows]
-    hums = [x["hum"] for x in rows]
+    temps = compact_series([x["temp"] for x in rows], 18)
+    hums = compact_series([x["hum"] for x in rows], 18)
+    graphs = ""
+    if full or ENABLE_FULL_HOME:
+        graphs = svg_series(temps, "Grafico temperatura") + svg_series(hums, "Grafico humedad", "#68d2ff")
+
+    token_q = "?token={}".format(WEB_TOKEN) if WEB_TOKEN else ""
+    full_url = "/?full=1"
+    if WEB_TOKEN:
+        full_url += "&token={}".format(WEB_TOKEN)
+    lock_txt = "Activo" if WEB_TOKEN else "No configurado"
 
     return """<!DOCTYPE html>
 <html lang="es">
@@ -993,6 +1076,7 @@ def page_home():
         <div class="sub">Sensor: <span class="{sensor_class}">{sensor_state}</span></div>
         <div class="sub">WiFi: <span class="{wifi_class}">{wifi_state}</span></div>
         <div class="sub">RSSI: {rssi}</div>
+        <div class="sub">Seguridad token: {lock_txt}</div>
         <div class="sub">Ultimo error sensor: {sensor_error}</div>
         <div class="sub">Ultimo error exterior: {ext_error}</div>
     </div>
@@ -1018,43 +1102,44 @@ def page_home():
     <div class="grid2">
         <div class="card">
             <div class="sub">Confort ambiental</div>
-            <div class="big" style="font-size:34px;">{icon} {comfort}</div>
+            <div class="big">{icon} {comfort}</div>
         </div>
         <div class="card">
-            <div class="sub">Punto de rocio</div>
-            <div class="big" style="font-size:34px;">{dp} °C</div>
+            <div class="sub">Condensacion</div>
+            <div class="big">{cond}</div>
+            <div class="sub">Punto de rocio interior: {dp} °C</div>
         </div>
     </div>
 
     <div class="grid2">
         <div class="card">
             <div class="sub">Comparacion interior vs exterior</div>
-            <div class="big" style="font-size:34px;">{compare}</div>
+            <div class="big">{compare}</div>
         </div>
         <div class="card">
             <div class="sub">Como viene para resfriado</div>
-            <div class="big" style="font-size:34px;">{cold}</div>
+            <div class="big">{cold}</div>
         </div>
     </div>
 
     <div class="grid2">
         <div class="card">
             <div class="sub">Donde esta amaneciendo</div>
-            <div class="big" style="font-size:34px;">{sun_region}</div>
+            <div class="big">{sun_region}</div>
         </div>
         <div class="card">
             <div class="sub">Sol local</div>
-            <div class="big" style="font-size:30px;">↑ {sunrise} / ↓ {sunset}</div>
+            <div class="big">↑ {sunrise} / ↓ {sunset}</div>
         </div>
     </div>
 
     <div class="card">
-        <div class="title" style="font-size:22px;">Alertas</div>
+        <div class="title" style="font-size:20px;">Alertas</div>
         {alerts}
     </div>
 
     <div class="card">
-        <div class="title" style="font-size:22px;">Estadisticas</div>
+        <div class="title" style="font-size:20px;">Estadisticas</div>
         <div class="grid3">
             <div class="mono">Temp min: {tmin}</div>
             <div class="mono">Temp max: {tmax}</div>
@@ -1066,74 +1151,77 @@ def page_home():
         <div class="sub" style="margin-top:10px;">Registros guardados: {count}</div>
     </div>
 
-    {svg1}
-    {svg2}
+    {graphs}
 
     <div class="card">
-        <div class="title" style="font-size:22px;">Acciones</div>
-        <a class="btn" href="/leer">Forzar lectura</a>
-        <a class="btn btn2" href="/actualizar_exterior">Actualizar exterior</a>
-        <a class="btn btn2" href="/descargar">Descargar CSV</a>
-        <a class="btn btn2" href="/estado">Estado tecnico</a>
-        <a class="btn btn2" href="/logs">Ver logs</a>
-        <a class="btn btn2" href="/json">JSON</a>
-        <a class="btn btn2" href="/lcd_on">LCD ON</a>
-        <a class="btn btn2" href="/lcd_off">LCD OFF</a>
-        <a class="btn btn2" href="/toggle_log">{log_text}</a>
-        <a class="btn btn2" href="/sync_time">Sincronizar hora</a>
-        <a class="btn btn2" href="/borrar_csv">Borrar CSV</a>
-        <a class="btn btn2" href="/borrar_logs">Borrar logs</a>
-        <a class="btn btn2" href="/reiniciar">Reiniciar</a>
+        <div class="title" style="font-size:20px;">Acciones</div>
+        <a class="btn" href="/leer{token_q}">Forzar lectura</a>
+        <a class="btn btn2" href="/actualizar_exterior{token_q}">Actualizar exterior</a>
+        <a class="btn btn2" href="/descargar{token_q}">Descargar CSV</a>
+        <a class="btn btn2" href="/estado{token_q}">Estado tecnico</a>
+        <a class="btn btn2" href="/logs{token_q}">Ver logs</a>
+        <a class="btn btn2" href="/json{token_q}">JSON</a>
+        <a class="btn btn2" href="/lcd_on{token_q}">LCD ON</a>
+        <a class="btn btn2" href="/lcd_off{token_q}">LCD OFF</a>
+        <a class="btn btn2" href="/toggle_log{token_q}">{log_text}</a>
+        <a class="btn btn2" href="/sync_time{token_q}">Sincronizar hora</a>
+        <a class="btn btn2" href="/borrar_csv{token_q}">Borrar CSV</a>
+        <a class="btn btn2" href="/borrar_logs{token_q}">Borrar logs</a>
+        <a class="btn btn2" href="/reiniciar{token_q}">Reiniciar</a>
+        <a class="btn btn2" href="{full_url}">Vista completa</a>
     </div>
 </div>
 </body>
 </html>
 """.format(
-        version=VERSION,
+        version=html_escape(VERSION),
         refresh=REFRESCO_WEB,
         style=style_base(),
-        ip=wifi_ip,
-        ubic=UBICACION,
-        fecha=fecha_texto(),
-        hora=hora_texto(),
-        uptime=uptime_texto(),
+        ip=html_escape(wifi_ip),
+        ubic=html_escape(UBICACION),
+        fecha=html_escape(fecha_texto()),
+        hora=html_escape(hora_texto()),
+        uptime=html_escape(uptime_texto()),
         ntp_class="ok" if ntp_ok else "bad",
         ntp_state="Sincronizado" if ntp_ok else "No sincronizado",
         sensor_class="ok" if sensor_ok else "bad",
         sensor_state="OK" if sensor_ok else "ERROR",
         wifi_class="ok" if wifi_conectado() else "bad",
         wifi_state="Conectado" if wifi_conectado() else "Sin WiFi",
-        rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
-        sensor_error=sensor_error,
-        ext_error=ext_error,
-        temp=fmt1(temperatura_actual),
-        hum=fmt1(humedad_actual),
-        temp_ext=fmt1(temp_ext),
-        hum_ext=fmt1(hum_ext),
-        wind=fmt1(wind_ext),
-        rain=fmt1(rain_ext),
-        cloud=fmt1(cloud_ext),
-        tt=temp_trend(),
-        th=hum_trend(),
+        rssi=html_escape("{} dBm".format(rssi) if rssi is not None else "N/D"),
+        lock_txt=html_escape(lock_txt),
+        sensor_error=html_escape(sensor_error),
+        ext_error=html_escape(ext_error),
+        temp=html_escape(fmt1(temperatura_actual)),
+        hum=html_escape(fmt1(humedad_actual)),
+        temp_ext=html_escape(fmt1(temp_ext)),
+        hum_ext=html_escape(fmt1(hum_ext)),
+        wind=html_escape(fmt1(wind_ext)),
+        rain=html_escape(fmt1(rain_ext)),
+        cloud=html_escape(fmt1(cloud_ext)),
+        tt=html_escape(temp_trend()),
+        th=html_escape(hum_trend()),
         icon=comfort_icon(),
-        comfort=comfort(temperatura_actual, humedad_actual),
-        dp=fmt1(dew_point(temperatura_actual, humedad_actual)),
-        compare=compare_inside_outside(),
-        cold=cold_state(temperatura_actual, humedad_actual),
-        sun_region=sunrise_region(),
-        sunrise=sunrise_ext,
-        sunset=sunset_ext,
+        comfort=html_escape(comfort(temperatura_actual, humedad_actual)),
+        dp=html_escape(fmt1(dew_point(temperatura_actual, humedad_actual))),
+        cond=html_escape(detect_condensation_risk()),
+        compare=html_escape(compare_inside_outside()),
+        cold=html_escape(cold_state(temperatura_actual, humedad_actual)),
+        sun_region=html_escape(sunrise_region()),
+        sunrise=html_escape(sunrise_ext),
+        sunset=html_escape(sunset_ext),
         alerts=alerts_html,
-        tmin=fmt1(st["tmin"]),
-        tmax=fmt1(st["tmax"]),
-        tavg=fmt1(st["tavg"]),
-        hmin=fmt1(st["hmin"]),
-        hmax=fmt1(st["hmax"]),
-        havg=fmt1(st["havg"]),
+        tmin=html_escape(fmt1(st["tmin"])),
+        tmax=html_escape(fmt1(st["tmax"])),
+        tavg=html_escape(fmt1(st["tavg"])),
+        hmin=html_escape(fmt1(st["hmin"])),
+        hmax=html_escape(fmt1(st["hmax"])),
+        havg=html_escape(fmt1(st["havg"])),
         count=st["count"],
-        svg1=svg_series(temps, "Grafico temperatura"),
-        svg2=svg_series(hums, "Grafico humedad", "#68d2ff"),
+        graphs=graphs,
         log_text="Desactivar guardado" if guardado_activo else "Activar guardado",
+        token_q=token_q,
+        full_url=full_url,
     )
 
 def page_logs():
@@ -1151,13 +1239,13 @@ def page_logs():
     <div class="card">
         <div class="title">Logs del sistema</div>
         <div class="mono">{logs}</div>
-        <a class="btn" href="/">Volver</a>
-        <a class="btn btn2" href="/borrar_logs">Borrar logs</a>
+        <a class="btn" href="/?token=jc123">Volver</a>
+        <a class="btn btn2" href="/borrar_logs?token=jc123">Borrar logs</a>
     </div>
 </div>
 </body>
 </html>
-""".format(style=style_base(), logs=read_logs())
+""".format(style=style_base(), logs=html_escape(read_logs()))
 
 def page_status():
     rssi = wifi_rssi()
@@ -1202,7 +1290,7 @@ def page_status():
         <div class="mono">LOG: {logf}</div>
         <div class="mono">Guardado activo: {log_activo}</div>
         <div class="mono">LCD activo: {lcd_activo}</div>
-        <a class="btn" href="/">Volver</a>
+        <a class="btn" href="/?token=jc123">Volver</a>
     </div>
 </div>
 </body>
@@ -1242,52 +1330,80 @@ def page_status():
 
 def json_status():
     rssi = wifi_rssi()
+    dp_in = dew_point(temperatura_actual, humedad_actual)
+    dp_out = dew_point(temp_ext, hum_ext)
     return """{{
   "version": "{version}",
-  "ip": "{ip}",
-  "ubicacion": "{ubic}",
-  "fecha": "{fecha}",
-  "hora": "{hora}",
-  "temperatura_interior": "{temp_in}",
-  "humedad_interior": "{hum_in}",
-  "temperatura_exterior": "{temp_out}",
-  "humedad_exterior": "{hum_out}",
-  "punto_rocio": "{dp}",
-  "confort": "{comfort}",
-  "resfriado": "{cold}",
-  "comparacion": "{compare}",
-  "donde_amaneciendo": "{sun_region}",
-  "amanecer_local": "{sunrise}",
-  "atardecer_local": "{sunset}",
-  "sensor_ok": {sensor_ok},
-  "wifi_ok": {wifi_ok},
-  "ntp_ok": {ntp_ok},
-  "rssi": "{rssi}",
-  "uptime": "{uptime}",
-  "ultima_lectura_local": "{ultima}"
+  "device": {{
+    "ip": "{ip}",
+    "ubicacion": "{ubic}",
+    "fecha": "{fecha}",
+    "hora": "{hora}",
+    "uptime": "{uptime}",
+    "rssi_dbm": "{rssi}"
+  }},
+  "inside": {{
+    "temperature_c": {temp_in},
+    "humidity_pct": {hum_in},
+    "dew_point_c": {dp_in},
+    "comfort": "{comfort}",
+    "cold_state": "{cold}"
+  }},
+  "outside": {{
+    "temperature_c": {temp_out},
+    "humidity_pct": {hum_out},
+    "dew_point_c": {dp_out},
+    "wind_kmh": {wind},
+    "rain_mm": {rain},
+    "cloud_pct": {cloud},
+    "weather_code": {weather_code},
+    "sunrise": "{sunrise}",
+    "sunset": "{sunset}"
+  }},
+  "analysis": {{
+    "compare": "{compare}",
+    "condensation_risk": "{cond}",
+    "sunrise_region": "{sun_region}"
+  }},
+  "status": {{
+    "sensor_ok": {sensor_ok},
+    "wifi_ok": {wifi_ok},
+    "ntp_ok": {ntp_ok},
+    "lcd_ok": {lcd_ok},
+    "server_ok": {server_ok},
+    "ultima_lectura_local": "{ultima}"
+  }}
 }}""".format(
-        version=VERSION,
-        ip=wifi_ip,
-        ubic=UBICACION,
-        fecha=fecha_texto(),
-        hora=hora_texto(),
-        temp_in=fmt1(temperatura_actual),
-        hum_in=fmt1(humedad_actual),
-        temp_out=fmt1(temp_ext),
-        hum_out=fmt1(hum_ext),
-        dp=fmt1(dew_point(temperatura_actual, humedad_actual)),
-        comfort=comfort(temperatura_actual, humedad_actual),
-        cold=cold_state(temperatura_actual, humedad_actual),
-        compare=compare_inside_outside(),
-        sun_region=sunrise_region(),
-        sunrise=sunrise_ext,
-        sunset=sunset_ext,
-        sensor_ok="true" if sensor_ok else "false",
-        wifi_ok="true" if wifi_conectado() else "false",
-        ntp_ok="true" if ntp_ok else "false",
-        rssi="{} dBm".format(rssi) if rssi is not None else "N/D",
-        uptime=uptime_texto(),
-        ultima=ultima_lectura_epoch
+        version=json_escape(VERSION),
+        ip=json_escape(wifi_ip),
+        ubic=json_escape(UBICACION),
+        fecha=json_escape(fecha_texto()),
+        hora=json_escape(hora_texto()),
+        uptime=json_escape(uptime_texto()),
+        rssi=json_escape("{} dBm".format(rssi) if rssi is not None else "N/D"),
+        temp_in=to_json_number(temperatura_actual),
+        hum_in=to_json_number(humedad_actual),
+        dp_in=to_json_number(dp_in),
+        comfort=json_escape(comfort(temperatura_actual, humedad_actual)),
+        cold=json_escape(cold_state(temperatura_actual, humedad_actual)),
+        temp_out=to_json_number(temp_ext),
+        hum_out=to_json_number(hum_ext),
+        dp_out=to_json_number(dp_out),
+        wind=to_json_number(wind_ext),
+        rain=to_json_number(rain_ext),
+        cloud=to_json_number(cloud_ext),
+        weather_code=to_json_number(weather_code_ext),
+        sunrise=json_escape(sunrise_ext),
+        sunset=json_escape(sunset_ext),
+        compare=json_escape(compare_inside_outside()),
+        cond=json_escape(detect_condensation_risk()),
+        sun_region=json_escape(sunrise_region()),
+        sensor_ok=to_bool_text(sensor_ok),
+        wifi_ok=to_bool_text(wifi_conectado()),
+        ntp_ok=to_bool_text(ntp_ok),
+        lcd_ok=to_bool_text(lcd_ok),
+        server_ok=to_bool_text(server_ok),
+        ultima=json_escape(ultima_lectura_epoch)
     )
 
 # -----------------------------
@@ -1345,70 +1461,63 @@ def handle_web():
 
     try:
         contador_hits += 1
-        req = cl.recv(1024)
+        req = cl.recv(1536)
         req = str(req)
+        raw_path = route_path(req)
+        path, args = split_path_query(raw_path)
+        full = args.get("full", "") == "1"
 
-        if "GET /descargar " in req:
-            respond(
-                cl,
-                read_csv(),
-                ctype="text/plain",
-                extras=["Content-Disposition: attachment; filename={}".format(CSV_FILE)]
-            )
+        if protected_path(path) and not auth_ok(args):
+            respond(cl, "<html><body><h1>401 token requerido</h1></body></html>", code="401 Unauthorized")
+            return
 
-        elif "GET /logs " in req:
+        if path == "/descargar":
+            respond(cl, read_csv(), ctype="text/plain", extras=["Content-Disposition: attachment; filename={}".format(CSV_FILE)])
+        elif path == "/logs":
             respond(cl, page_logs())
-
-        elif "GET /estado " in req:
+        elif path == "/estado":
             respond(cl, page_status())
-
-        elif "GET /json " in req:
-            respond(cl, json_status(), ctype="application/json; charset=utf-8")
-
-        elif "GET /leer " in req:
+        elif path == "/json":
+            if WEB_TOKEN and not auth_ok(args):
+                respond(cl, '{"error":"token requerido"}', ctype="application/json; charset=utf-8", code="401 Unauthorized")
+            else:
+                respond(cl, json_status(), ctype="application/json; charset=utf-8")
+        elif path == "/leer":
             ok = read_sensor()
             append_log("Lectura manual {}".format("OK" if ok else "FAIL"))
             rotate_lcd(True)
-            respond(cl, page_home())
-
-        elif "GET /actualizar_exterior " in req:
+            respond(cl, page_home(full))
+        elif path == "/actualizar_exterior":
             ok = fetch_weather_outside()
             append_log("Actualizar exterior {}".format("OK" if ok else "FAIL"))
             rotate_lcd(True)
-            respond(cl, page_home())
-
-        elif "GET /sync_time " in req:
+            respond(cl, page_home(full))
+        elif path == "/sync_time":
             ok = sync_time_ntp()
             append_log("Sincronizacion manual NTP => {}".format(ok))
             rotate_lcd(True)
-            respond(cl, page_home())
-
-        elif "GET /borrar_csv " in req:
+            respond(cl, page_home(full))
+        elif path == "/borrar_csv":
             ok, msg = clear_csv()
             append_log("Accion borrar_csv: {}".format(msg))
             rotate_lcd(True)
-            respond(cl, "<html><body><h1>{}</h1><p><a href='/'>Volver</a></p></body></html>".format(msg))
-
-        elif "GET /borrar_logs " in req:
+            respond(cl, "<html><body><h1>{}</h1><p><a href='/?token={}'>Volver</a></p></body></html>".format(html_escape(msg), WEB_TOKEN))
+        elif path == "/borrar_logs":
             ok, msg = clear_logs()
-            respond(cl, "<html><body><h1>{}</h1><p><a href='/'>Volver</a></p></body></html>".format(msg))
-
-        elif "GET /toggle_log " in req:
+            respond(cl, "<html><body><h1>{}</h1><p><a href='/?token={}'>Volver</a></p></body></html>".format(html_escape(msg), WEB_TOKEN))
+        elif path == "/toggle_log":
             guardado_activo = not guardado_activo
             append_log("Guardado activo => {}".format(guardado_activo))
             rotate_lcd(True)
-            respond(cl, page_home())
-
-        elif "GET /lcd_on " in req:
+            respond(cl, page_home(full))
+        elif path == "/lcd_on":
             lcd_on_total()
             rotate_lcd(True)
-            respond(cl, page_home())
-
-        elif "GET /lcd_off " in req:
+            respond(cl, page_home(full))
+        elif path == "/lcd_off":
             lcd_off_total()
-            respond(cl, page_home())
-
-        elif "GET /reiniciar " in req:
+            respond(cl, page_home(full))
+        elif path == "/reiniciar":
             append_log("Reinicio solicitado desde web", "WARN")
             respond(cl, "<html><body><h1>Reiniciando ESP32...</h1></body></html>")
             try:
@@ -1418,9 +1527,8 @@ def handle_web():
             time.sleep(1)
             machine.reset()
             return
-
         else:
-            respond(cl, page_home())
+            respond(cl, page_home(full))
 
         server_ok = True
         server_error = "Ninguno"
