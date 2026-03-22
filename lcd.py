@@ -1,146 +1,75 @@
-import time
+from time import sleep_ms
 
 class LCD:
-
-    def __init__(self, i2c, addr=0x27, cols=16, rows=2):
+    def __init__(self, i2c, addr, cols=16, rows=2):
         self.i2c = i2c
         self.addr = addr
         self.cols = cols
         self.rows = rows
-        self.backlight = True
 
-        time.sleep_ms(50)
+        self.backlight = 0x08
 
-        self._write4(0x30)
-        time.sleep_ms(5)
-        self._write4(0x30)
-        time.sleep_ms(5)
-        self._write4(0x30)
-        time.sleep_ms(5)
-
-        self._write4(0x20)
-        time.sleep_ms(5)
+        sleep_ms(20)
+        self._write(0x30)
+        sleep_ms(5)
+        self._write(0x30)
+        sleep_ms(1)
+        self._write(0x30)
+        self._write(0x20)
 
         self.command(0x28)
-        self.command(0x0C)
-        self.command(0x06)
+        self.command(0x08)
         self.command(0x01)
+        sleep_ms(2)
+        self.command(0x06)
+        self.command(0x0C)
 
-    # -------------------------
-    # LOW LEVEL
-    # -------------------------
-
-    def _write_byte(self, data):
-        self.i2c.writeto(self.addr, bytes([data | (0x08 if self.backlight else 0)]))
+    def _write(self, data):
+        self.i2c.writeto(self.addr, bytes([data | self.backlight]))
 
     def _pulse(self, data):
-        self._write_byte(data | 0x04)
-        time.sleep_us(1)
-        self._write_byte(data & ~0x04)
-        time.sleep_us(50)
+        self._write(data | 0x04)
+        self._write(data & ~0x04)
 
-    def _write4(self, data, rs=0):
-        val = (data & 0xF0) | (0x01 if rs else 0)
-        self._write_byte(val)
-        self._pulse(val)
-
-    def _write8(self, data, rs=0):
-        self._write4(data & 0xF0, rs)
-        self._write4((data << 4) & 0xF0, rs)
-
-    # -------------------------
-    # COMMANDS
-    # -------------------------
+    def _send(self, data, mode):
+        high = data & 0xF0
+        low = (data << 4) & 0xF0
+        self._pulse(high | mode)
+        self._pulse(low | mode)
 
     def command(self, cmd):
-        self._write8(cmd, 0)
-        if cmd in (0x01, 0x02):
-            time.sleep_ms(2)
+        self._send(cmd, 0)
 
-    def write_char(self, ch):
-        self._write8(ord(ch), 1)
-
-    def putstr(self, text):
-        for c in text:
-            self.write_char(c)
+    def write(self, char):
+        self._send(ord(char), 1)
 
     def clear(self):
         self.command(0x01)
+        sleep_ms(2)
 
     def move_to(self, col, row):
-        row_offsets = [0x00, 0x40, 0x14, 0x54]
-        self.command(0x80 + row_offsets[row] + col)
-
-    # -------------------------
-    # BACKLIGHT
-    # -------------------------
-
-    def backlight_on(self):
-        self.backlight = True
-        self._write_byte(0)
-
-    def backlight_off(self):
-        self.backlight = False
-        self._write_byte(0)
-
-    # -------------------------
-    # TEXT ALIGN (sin ljust)
-    # -------------------------
-
-    def _pad_left(self, text):
-        return text + " " * (self.cols - len(text))
-
-    def _pad_right(self, text):
-        return " " * (self.cols - len(text)) + text
-
-    def _pad_center(self, text):
-        space = self.cols - len(text)
-        left = space // 2
-        right = space - left
-        return (" " * left) + text + (" " * right)
-
-    def write_line(self, text, row=0, align="left"):
-
-        text = str(text)
-
-        if len(text) > self.cols:
-            text = text[:self.cols]
-
-        if align == "center":
-            text = self._pad_center(text)
-        elif align == "right":
-            text = self._pad_right(text)
-        else:
-            text = self._pad_left(text)
-
-        self.move_to(0, row)
-        self.putstr(text)
+        addr = col + (0x40 * row)
+        self.command(0x80 | addr)
 
     def message(self, line1="", line2=""):
-        self.write_line(line1, 0)
-        if self.rows > 1:
-            self.write_line(line2, 1)
+        self.clear()
+        self.move_to(0,0)
+        for c in line1[:16]:
+            self.write(c)
+
+        self.move_to(0,1)
+        for c in line2[:16]:
+            self.write(c)
 
     def message_centered(self, line1="", line2=""):
-        self.write_line(line1, 0, "center")
-        if self.rows > 1:
-            self.write_line(line2, 1, "center")
+        l1 = line1.center(self.cols)
+        l2 = line2.center(self.cols)
+        self.message(l1,l2)
 
-    # -------------------------
-    # SCROLL
-    # -------------------------
+    def backlight_on(self):
+        self.backlight = 0x08
+        self._write(0)
 
-    def scroll_text(self, text, row=0, delay_ms=200, loops=1):
-
-        text = str(text)
-
-        if len(text) <= self.cols:
-            self.write_line(text, row)
-            return
-
-        buf = text + "    "
-
-        for _ in range(loops):
-            for i in range(len(buf) - self.cols + 1):
-                self.write_line(buf[i:i+self.cols], row)
-                time.sleep_ms(delay_ms)
+    def backlight_off(self):
+        self.backlight = 0x00
+        self._write(0)
