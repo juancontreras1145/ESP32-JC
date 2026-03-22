@@ -21,6 +21,7 @@ from machine import Pin, I2C
 try:
     import updater
     updater.update()
+    machine.reset()
 except Exception as e:
     print("Updater error:", e)
 
