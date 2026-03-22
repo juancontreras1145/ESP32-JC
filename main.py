@@ -1,5 +1,5 @@
 # =========================================
-# ESP32 JC Monitor v62
+# ESP32 JC Monitor v64
 # Integrado: interior + exterior + amaneciendo
 # logs + JSON + estado + CSV + LCD rotativo
 # =========================================
