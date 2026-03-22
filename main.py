@@ -1,7 +1,9 @@
+
 # =========================================
 # ESP32 JC Monitor v62
 # Integrado: interior + exterior + amaneciendo
 # logs + JSON + estado + CSV + LCD rotativo
+# + gestor de archivos web (ver / descargar / subir / borrar)
 # =========================================
 
 import time
@@ -15,7 +17,7 @@ import machine
 import ntptime
 from machine import Pin, I2C
 
-VERSION = "ESP32 JC Monitor v2"
+VERSION = "ESP32 JC Monitor v62"
 
 # -----------------------------
 # CONFIG
@@ -53,6 +55,9 @@ MAX_LOG_LINES = 220
 MAX_CSV_LINES = 1440
 WEB_TOKEN = "jc123"
 ENABLE_FULL_HOME = False
+
+MAX_UPLOAD_SIZE = 12288
+ARCHIVOS_OCULTOS = ("System Volume Information",)
 
 # Ubicacion fija por defecto
 LAT = -33.0475
@@ -140,7 +145,7 @@ def local_tuple():
     try:
         return time.localtime(local_epoch())
     except:
-        return (2000,1,1,0,0,0,0,0)
+        return (2000, 1, 1, 0, 0, 0, 0, 0)
 
 def local_dt():
     try:
@@ -192,7 +197,6 @@ def clamp_text(text, n=16):
         return s
     return s[:n]
 
-
 def html_escape(s):
     try:
         s = str(s)
@@ -208,7 +212,6 @@ def json_escape(s):
         return s
     except:
         return ""
-        return ""
 
 def to_bool_text(v):
     return "true" if v else "false"
@@ -221,15 +224,34 @@ def to_json_number(v):
     except:
         return "null"
 
-def route_path(req):
+def decode_req(b):
     try:
-        line = req.split("\r\n")[0]
+        return b.decode("utf-8")
+    except:
+        try:
+            return b.decode("latin-1")
+        except:
+            return str(b)
+
+def route_path(req_text):
+    try:
+        line = req_text.split("\r\n")[0]
         parts = line.split(" ")
         if len(parts) >= 2:
             return parts[1]
     except:
         pass
     return "/"
+
+def request_method(req_text):
+    try:
+        line = req_text.split("\r\n")[0]
+        parts = line.split(" ")
+        if len(parts) >= 1:
+            return parts[0]
+    except:
+        pass
+    return "GET"
 
 def split_path_query(path):
     try:
@@ -260,7 +282,8 @@ def auth_ok(args):
 def protected_path(path):
     return path in (
         "/leer", "/actualizar_exterior", "/sync_time", "/borrar_csv",
-        "/borrar_logs", "/toggle_log", "/lcd_on", "/lcd_off", "/reiniciar"
+        "/borrar_logs", "/toggle_log", "/lcd_on", "/lcd_off", "/reiniciar",
+        "/files", "/upload", "/upload_file", "/download_file", "/delete_file"
     )
 
 def maybe_rotate_csv():
@@ -313,6 +336,103 @@ def compact_series(values, n=18):
         out.append(values[int(i)])
         i += step
     return out[:n]
+
+def file_size_text(name):
+    try:
+        size = os.stat(name)[6]
+        if size < 1024:
+            return "{} B".format(size)
+        if size < 1024 * 1024:
+            return "{:.1f} KB".format(size / 1024.0)
+        return "{:.2f} MB".format(size / (1024.0 * 1024.0))
+    except:
+        return "N/D"
+
+def file_ok_name(name):
+    try:
+        if not name:
+            return False
+        if "/" in name or "\\" in name or ".." in name or ":" in name:
+            return False
+        if name.startswith("."):
+            return False
+        return True
+    except:
+        return False
+
+def list_files_sorted():
+    out = []
+    try:
+        items = os.listdir()
+        items.sort()
+        for name in items:
+            if name in ARCHIVOS_OCULTOS:
+                continue
+            try:
+                st = os.stat(name)
+                out.append((name, st[6]))
+            except:
+                out.append((name, 0))
+    except:
+        pass
+    return out
+
+def parse_content_length(req_text):
+    try:
+        for line in req_text.split("\r\n"):
+            low = line.lower()
+            if low.startswith("content-length:"):
+                return int(line.split(":", 1)[1].strip())
+    except:
+        pass
+    return 0
+
+def parse_boundary(req_text):
+    try:
+        for line in req_text.split("\r\n"):
+            low = line.lower()
+            if low.startswith("content-type:") and "boundary=" in line:
+                return line.split("boundary=", 1)[1].strip()
+    except:
+        pass
+    return None
+
+def parse_filename_from_part(body_bytes):
+    try:
+        marker = b'filename="'
+        i = body_bytes.find(marker)
+        if i < 0:
+            return None
+        j = i + len(marker)
+        k = body_bytes.find(b'"', j)
+        if k < 0:
+            return None
+        name = body_bytes[j:k].decode("utf-8")
+        if file_ok_name(name):
+            return name
+    except:
+        pass
+    return None
+
+def parse_multipart_file(body_bytes, boundary):
+    try:
+        bnd = b"--" + boundary.encode()
+        header_end = body_bytes.find(b"\r\n\r\n")
+        if header_end < 0:
+            return None, None
+        part_header = body_bytes[:header_end]
+        filename = parse_filename_from_part(part_header)
+        data_start = header_end + 4
+
+        end_marker = b"\r\n" + bnd
+        data_end = body_bytes.find(end_marker, data_start)
+        if data_end < 0:
+            data_end = len(body_bytes)
+
+        data = body_bytes[data_start:data_end]
+        return filename, data
+    except:
+        return None, None
 
 # -----------------------------
 # LOGS
@@ -552,20 +672,6 @@ def _parse_number_after(key, txt):
     except:
         return None
 
-def _parse_string_after(key, txt):
-    i = txt.find(key)
-    if i < 0:
-        return None
-    j = i + len(key)
-    out = ""
-    while j < len(txt):
-        ch = txt[j]
-        if ch == '"' or ch == "," or ch == "}" or ch == "]":
-            break
-        out += ch
-        j += 1
-    return out
-
 def _parse_first_from_array(key, txt):
     i = txt.find(key)
     if i < 0:
@@ -597,7 +703,7 @@ def fetch_weather_outside():
         return False
 
     url = (
-        "https://api.open-meteo.com/v1/forecast"
+        "http://api.open-meteo.com/v1/forecast"
         "?latitude={lat}&longitude={lon}"
         "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,cloud_cover,weather_code"
         "&daily=sunrise,sunset"
@@ -769,26 +875,16 @@ def compare_inside_outside():
     return "Evaluar ventana"
 
 def sunrise_region():
-    # Aproximacion simple segun hora UTC real
     try:
-        t_utc = time.localtime(now_epoch())
+        t_utc = time.gmtime(now_epoch())
         h = t_utc[3]
     except:
         h = 0
 
     zonas = [
-        "Pacifico",          # 00-01
-        "Nueva Zelanda",     # 02-03
-        "Australia",         # 04-05
-        "Indonesia",         # 06-07
-        "China",             # 08-09
-        "India",             # 10-11
-        "Medio Oriente",     # 12-13
-        "Europa",            # 14-15
-        "Africa",            # 16-17
-        "Atlantico",         # 18-19
-        "Sudamerica",        # 20-21
-        "Pacifico",          # 22-23
+        "Pacifico", "Nueva Zelanda", "Australia", "Indonesia",
+        "China", "India", "Medio Oriente", "Europa",
+        "Africa", "Atlantico", "Sudamerica", "Pacifico",
     ]
 
     idx = int(h / 2)
@@ -928,11 +1024,11 @@ def rotate_lcd(force=False):
     ultimo_cambio_lcd = ahora
 
     screens = [
-        ("Int {}C".format(fmt1(temperatura_actual)),
-         "Hum {}%".format(fmt1(humedad_actual))),
+        ("Interior {} C".format(fmt1(temperatura_actual)),
+         "Humedad {} %".format(fmt1(humedad_actual))),
 
-        ("Ext {}C".format(fmt1(temp_ext)),
-         "Hum {}%".format(fmt1(hum_ext))),
+        ("Exterior {} C".format(fmt1(temp_ext)),
+         "Humedad {} %".format(fmt1(hum_ext))),
 
         ("Confort",
          comfort(temperatura_actual, humedad_actual)),
@@ -940,7 +1036,7 @@ def rotate_lcd(force=False):
         ("Comparacion",
          clamp_text(compare_inside_outside(), 16)),
 
-        ("Amanece en",
+        ("Amaneciendo",
          clamp_text(sunrise_region(), 16)),
 
         ("Hora " + hora_texto()[:8],
@@ -951,6 +1047,8 @@ def rotate_lcd(force=False):
         indice_lcd = 0
 
     a, b = screens[indice_lcd]
+    a = clamp_text(a, 16)
+    b = clamp_text(b, 16)
 
     if indice_lcd in (2, 3, 4):
         lcd_msg(a, b, 0, True)
@@ -984,6 +1082,9 @@ def style_base():
     .pill{display:inline-block;margin:4px 6px 0 0;padding:7px 10px;border-radius:999px;font-size:13px;font-weight:bold}
     .alert{background:#5f1d2a;color:#ffd5db}
     .okpill{background:#153247;color:#cfe8ff}
+    .table{width:100%;border-collapse:collapse}
+    .table td,.table th{padding:8px;border-bottom:1px solid #22466f;text-align:left}
+    input[type=file],input[type=submit]{margin-top:8px}
     @media (max-width:700px){.grid2,.grid3{grid-template-columns:1fr}}
     </style>
     """
@@ -1084,14 +1185,14 @@ def page_home(full=False):
     <div class="grid2">
         <div class="card">
             <div class="sub">Interior</div>
-            <div class="big">{temp} °C</div>
+            <div class="big">{temp} C</div>
             <div class="sub">Humedad: {hum} %</div>
             <div class="sub">Tendencia T: {tt}</div>
             <div class="sub">Tendencia H: {th}</div>
         </div>
         <div class="card">
             <div class="sub">Exterior</div>
-            <div class="big">{temp_ext} °C</div>
+            <div class="big">{temp_ext} C</div>
             <div class="sub">Humedad: {hum_ext} %</div>
             <div class="sub">Viento: {wind} km/h</div>
             <div class="sub">Lluvia: {rain} mm</div>
@@ -1107,7 +1208,7 @@ def page_home(full=False):
         <div class="card">
             <div class="sub">Condensacion</div>
             <div class="big">{cond}</div>
-            <div class="sub">Punto de rocio interior: {dp} °C</div>
+            <div class="sub">Punto de rocio interior: {dp} C</div>
         </div>
     </div>
 
@@ -1167,6 +1268,7 @@ def page_home(full=False):
         <a class="btn btn2" href="/sync_time{token_q}">Sincronizar hora</a>
         <a class="btn btn2" href="/borrar_csv{token_q}">Borrar CSV</a>
         <a class="btn btn2" href="/borrar_logs{token_q}">Borrar logs</a>
+        <a class="btn btn2" href="/files{token_q}">Archivos</a>
         <a class="btn btn2" href="/reiniciar{token_q}">Reiniciar</a>
         <a class="btn btn2" href="{full_url}">Vista completa</a>
     </div>
@@ -1239,13 +1341,13 @@ def page_logs():
     <div class="card">
         <div class="title">Logs del sistema</div>
         <div class="mono">{logs}</div>
-        <a class="btn" href="/?token=jc123">Volver</a>
-        <a class="btn btn2" href="/borrar_logs?token=jc123">Borrar logs</a>
+        <a class="btn" href="/?token={token}">Volver</a>
+        <a class="btn btn2" href="/borrar_logs?token={token}">Borrar logs</a>
     </div>
 </div>
 </body>
 </html>
-""".format(style=style_base(), logs=html_escape(read_logs()))
+""".format(style=style_base(), logs=html_escape(read_logs()), token=WEB_TOKEN)
 
 def page_status():
     rssi = wifi_rssi()
@@ -1290,7 +1392,7 @@ def page_status():
         <div class="mono">LOG: {logf}</div>
         <div class="mono">Guardado activo: {log_activo}</div>
         <div class="mono">LCD activo: {lcd_activo}</div>
-        <a class="btn" href="/?token=jc123">Volver</a>
+        <a class="btn" href="/?token={token}">Volver</a>
     </div>
 </div>
 </body>
@@ -1325,8 +1427,65 @@ def page_status():
         csv=CSV_FILE,
         logf=LOG_FILE,
         log_activo=guardado_activo,
-        lcd_activo=lcd_activo
+        lcd_activo=lcd_activo,
+        token=WEB_TOKEN
     )
+
+def page_files():
+    token_q = "?token={}".format(WEB_TOKEN) if WEB_TOKEN else ""
+    rows = []
+    for name, size in list_files_sorted():
+        dl = "/download_file?name={}&token={}".format(name, WEB_TOKEN)
+        rm = "/delete_file?name={}&token={}".format(name, WEB_TOKEN)
+        rows.append(
+            "<tr><td>{}</td><td>{}</td><td>"
+            "<a class='btn btn2' href='{}'>Descargar</a>"
+            "<a class='btn btn2' href='{}'>Borrar</a>"
+            "</td></tr>".format(
+                html_escape(name),
+                html_escape(file_size_text(name)),
+                html_escape(dl),
+                html_escape(rm)
+            )
+        )
+    rows_html = "".join(rows) if rows else "<tr><td colspan='3'>Sin archivos</td></tr>"
+
+    return """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Archivos</title>
+{style}
+</head>
+<body>
+<div class="wrap">
+    <div class="card">
+        <div class="title">Gestor de archivos</div>
+        <div class="sub">Límite de subida: {max_size} bytes</div>
+        <a class="btn" href="/?token={token}">Volver</a>
+    </div>
+
+    <div class="card">
+        <div class="title" style="font-size:20px;">Subir archivo</div>
+        <form action="/upload_file?token={token}" method="post" enctype="multipart/form-data">
+            <input type="file" name="file">
+            <br>
+            <input class="btn" type="submit" value="Subir al ESP32">
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="title" style="font-size:20px;">Archivos actuales</div>
+        <table class="table">
+            <tr><th>Nombre</th><th>Tamaño</th><th>Acciones</th></tr>
+            {rows}
+        </table>
+    </div>
+</div>
+</body>
+</html>
+""".format(style=style_base(), token=WEB_TOKEN, rows=rows_html, max_size=MAX_UPLOAD_SIZE)
 
 def json_status():
     rssi = wifi_rssi()
@@ -1411,15 +1570,103 @@ def json_status():
 # -----------------------------
 def respond(cl, body, ctype="text/html; charset=utf-8", code="200 OK", extras=None):
     try:
-        cl.send("HTTP/1.0 {}\r\n".format(code))
-        cl.send("Content-Type: {}\r\n".format(ctype))
+        if isinstance(body, bytes):
+            body_bytes = body
+        else:
+            body_bytes = body.encode("utf-8")
+
+        headers = [
+            "HTTP/1.0 {}".format(code),
+            "Content-Type: {}".format(ctype),
+            "Content-Length: {}".format(len(body_bytes)),
+        ]
         if extras:
             for h in extras:
-                cl.send(h + "\r\n")
-        cl.send("\r\n")
-        cl.send(body)
+                headers.append(h)
+
+        cl.send("\r\n".join(headers))
+        cl.send("\r\n\r\n")
+        cl.send(body_bytes)
     except Exception as e:
         append_log("send_response error: {}".format(e), "ERROR")
+
+def send_file_response(cl, filename):
+    try:
+        if not file_ok_name(filename) or not exists_file(filename):
+            respond(cl, "<html><body><h1>Archivo no encontrado</h1></body></html>", code="404 Not Found")
+            return
+
+        size = os.stat(filename)[6]
+        headers = [
+            "HTTP/1.0 200 OK",
+            "Content-Type: application/octet-stream",
+            "Content-Length: {}".format(size),
+            "Content-Disposition: attachment; filename={}".format(filename),
+        ]
+        cl.send("\r\n".join(headers))
+        cl.send("\r\n\r\n")
+
+        with open(filename, "rb") as f:
+            while True:
+                chunk = f.read(512)
+                if not chunk:
+                    break
+                cl.send(chunk)
+    except Exception as e:
+        append_log("download error: {}".format(e), "ERROR")
+        try:
+            respond(cl, "<html><body><h1>Error al descargar</h1></body></html>", code="500 Internal Server Error")
+        except:
+            pass
+
+def handle_upload_request(cl, req_text, body_start):
+    try:
+        boundary = parse_boundary(req_text)
+        content_length = parse_content_length(req_text)
+
+        if not boundary:
+            respond(cl, "<html><body><h1>Boundary no encontrado</h1></body></html>", code="400 Bad Request")
+            return
+
+        if content_length <= 0:
+            respond(cl, "<html><body><h1>Content-Length invalido</h1></body></html>", code="400 Bad Request")
+            return
+
+        if content_length > MAX_UPLOAD_SIZE + 2048:
+            respond(cl, "<html><body><h1>Archivo demasiado grande</h1></body></html>", code="413 Payload Too Large")
+            return
+
+        body = body_start
+        while len(body) < content_length:
+            chunk = cl.recv(512)
+            if not chunk:
+                break
+            body += chunk
+            if len(body) > MAX_UPLOAD_SIZE + 2048:
+                respond(cl, "<html><body><h1>Archivo excede limite</h1></body></html>", code="413 Payload Too Large")
+                return
+
+        filename, data = parse_multipart_file(body, boundary)
+        if not filename or data is None:
+            respond(cl, "<html><body><h1>No se pudo extraer el archivo</h1></body></html>", code="400 Bad Request")
+            return
+
+        if len(data) > MAX_UPLOAD_SIZE:
+            respond(cl, "<html><body><h1>Archivo supera el limite permitido</h1></body></html>", code="413 Payload Too Large")
+            return
+
+        if not file_ok_name(filename):
+            respond(cl, "<html><body><h1>Nombre de archivo no permitido</h1></body></html>", code="400 Bad Request")
+            return
+
+        with open(filename, "wb") as f:
+            f.write(data)
+
+        append_log("Archivo subido: {} ({})".format(filename, len(data)))
+        respond(cl, "<html><body><h1>Archivo guardado: {}</h1><p><a href='/files?token={}'>Volver a archivos</a></p></body></html>".format(html_escape(filename), WEB_TOKEN))
+    except Exception as e:
+        append_log("upload error: {}".format(e), "ERROR")
+        respond(cl, "<html><body><h1>Error al subir archivo</h1></body></html>", code="500 Internal Server Error")
 
 def init_server():
     global server, server_ok, server_error
@@ -1461,11 +1708,25 @@ def handle_web():
 
     try:
         contador_hits += 1
-        req = cl.recv(1536)
-        req = str(req)
-        raw_path = route_path(req)
+        req_bytes = cl.recv(1536)
+        if not req_bytes:
+            try:
+                cl.close()
+            except:
+                pass
+            return
+
+        req_text = decode_req(req_bytes)
+        method = request_method(req_text)
+        raw_path = route_path(req_text)
         path, args = split_path_query(raw_path)
         full = args.get("full", "") == "1"
+
+        header_end = req_bytes.find(b"\r\n\r\n")
+        if header_end >= 0:
+            body_start = req_bytes[header_end + 4:]
+        else:
+            body_start = b""
 
         if protected_path(path) and not auth_ok(args):
             respond(cl, "<html><body><h1>401 token requerido</h1></body></html>", code="401 Unauthorized")
@@ -1478,10 +1739,29 @@ def handle_web():
         elif path == "/estado":
             respond(cl, page_status())
         elif path == "/json":
-            if WEB_TOKEN and not auth_ok(args):
-                respond(cl, '{"error":"token requerido"}', ctype="application/json; charset=utf-8", code="401 Unauthorized")
+            respond(cl, json_status(), ctype="application/json; charset=utf-8")
+        elif path == "/files":
+            respond(cl, page_files())
+        elif path == "/download_file":
+            send_file_response(cl, args.get("name", ""))
+        elif path == "/delete_file":
+            name = args.get("name", "")
+            if not file_ok_name(name):
+                respond(cl, "<html><body><h1>Nombre no permitido</h1></body></html>", code="400 Bad Request")
+            elif not exists_file(name):
+                respond(cl, "<html><body><h1>Archivo no existe</h1></body></html>", code="404 Not Found")
             else:
-                respond(cl, json_status(), ctype="application/json; charset=utf-8")
+                try:
+                    os.remove(name)
+                    append_log("Archivo borrado: {}".format(name))
+                    respond(cl, "<html><body><h1>Archivo borrado: {}</h1><p><a href='/files?token={}'>Volver</a></p></body></html>".format(html_escape(name), WEB_TOKEN))
+                except Exception as e:
+                    append_log("delete file error: {}".format(e), "ERROR")
+                    respond(cl, "<html><body><h1>No se pudo borrar</h1></body></html>", code="500 Internal Server Error")
+        elif path == "/upload":
+            respond(cl, page_files())
+        elif path == "/upload_file" and method == "POST":
+            handle_upload_request(cl, req_text, body_start)
         elif path == "/leer":
             ok = read_sensor()
             append_log("Lectura manual {}".format("OK" if ok else "FAIL"))
