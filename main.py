@@ -1,249 +1,224 @@
 
-# Advanced Environmental Analysis Engine (Compact)
-# Designed for ESP32 dashboards or small displays
+# =========================================
+# ESP32 JC Monitor v63
+# Interior + exterior + analisis ambiental
+# =========================================
 
-import time
-import math
+import time, socket, network, dht, os, gc, math, machine, ntptime
+from machine import Pin, I2C
 
-def phase_of_day(hour):
-    if 5 <= hour < 8:
-        return "amanecer"
-    elif 8 <= hour < 12:
-        return "mañana"
-    elif 12 <= hour < 17:
-        return "tarde"
-    elif 17 <= hour < 20:
-        return "atardecer"
-    elif 20 <= hour < 23:
-        return "noche"
-    else:
-        return "madrugada"
+VERSION = "ESP32 JC Monitor v63"
 
+# -----------------------------
+# CONFIG
+# -----------------------------
+LCD_SDA = 8
+LCD_SCL = 9
+LCD_ADDR = 0x27
+DHT_PIN = 4
 
-# --- Base environmental states (short phrases) ---
-BASE = [
-"Ambiente estable",
-"Clima interior OK",
-"Condicion normal",
-"Lectura estable",
-"Microclima OK",
-"Estado ambiental",
-"Clima tranquilo",
-"Balance interior",
-"Parametros OK",
-"Ambiente controlado",
-"Lectura correcta",
-"Clima domestico",
-"Condicion neutra",
-"Estado interior",
-"Ambiente equilibrado"
-]
+CSV_FILE = "temperaturas.csv"
+LOG_FILE = "main.log"
 
-TEMP = [
-"Exterior mas frio",
-"Exterior mas calido",
-"Temp interior fresca",
-"Temp interior calida",
-"Dif termica alta",
-"Gradiente termico",
-"Balance termico",
-"Cambio termico",
-"Interior retiene calor",
-"Interior retiene frio",
-"Temp estable",
-"Temp moderada"
-]
+INTERVALO_GUARDADO = 600
+INTERVALO_EXTERIOR = 1800
+TIMEOUT_WEB = 1
+REFRESCO_WEB = 12
+ROTACION_LCD_SEG = 3
 
-HUM = [
-"Humedad alta",
-"Humedad baja",
-"Aire seco",
-"Aire humedo",
-"Dif humedad",
-"Humedad estable",
-"Humedad moderada",
-"Cambio humedad",
-"Humedad interior",
-"Humedad exterior"
-]
+UTC_OFFSET_HORAS = -3
 
-VENT = [
-"Ventilar recomendado",
-"Ventilar breve",
-"Ventilar ayuda",
-"Ventilar neutro",
-"Ventilar poco util",
-"Aire renovado",
-"Aire cargado",
-"Aire estable",
-"Ventilar posible",
-"Ventilar leve"
-]
+LAT = -33.0475
+LON = -71.4425
+UBICACION = "Quilpue, Valparaiso"
 
-MOLD = [
-"Riesgo moho bajo",
-"Riesgo moho medio",
-"Riesgo moho alto"
-]
+WEB_TOKEN = "jc123"
 
-COND = [
-"Sin condensacion",
-"Condensacion posible",
-"Condensacion probable"
-]
+# -----------------------------
+# ESTADO GLOBAL
+# -----------------------------
+inicio_epoch = time.time()
+temperatura_actual = None
+humedad_actual = None
+temperatura_prev = None
+humedad_prev = None
 
-COMFORT = [
-"Confort ideal",
-"Confort aceptable",
-"Ambiente fresco",
-"Ambiente calido"
-]
+temp_ext = None
+hum_ext = None
 
-PHASE_MSG = {
-"amanecer":[
-"Amanecer fresco",
-"Amanecer estable",
-"Aire matinal",
-"Hora de ventilar",
-"Inicio del dia"
-],
-"mañana":[
-"Manana estable",
-"Clima matinal",
-"Actividad diurna",
-"Ambiente templado",
-"Manana tranquila"
-],
-"tarde":[
-"Tarde termica",
-"Acumula calor",
-"Clima diurno",
-"Tarde estable",
-"Ambiente activo"
-],
-"atardecer":[
-"Transicion termica",
-"Aire vespertino",
-"Atardecer fresco",
-"Hora de balance",
-"Cambio de dia"
-],
-"noche":[
-"Noche estable",
-"Clima nocturno",
-"Aire nocturno",
-"Temp descendente",
-"Noche tranquila"
-],
-"madrugada":[
-"Madrugada calma",
-"Aire muy estable",
-"Temp minima",
-"Silencio termico",
-"Madrugada fria"
-]
-}
+sensor = None
+server = None
 
-
-# --- helper calculations ---
+# -----------------------------
+# HELPERS
+# -----------------------------
+def now_epoch():
+    return int(time.time())
 
 def dew_point(temp, hum):
-    a = 17.27
-    b = 237.7
-    alpha = ((a * temp) / (b + temp)) + math.log(hum/100.0)
-    return (b * alpha) / (a - alpha)
+    try:
+        a=17.27
+        b=237.7
+        alpha=((a*temp)/(b+temp))+math.log(hum/100.0)
+        return round((b*alpha)/(a-alpha),1)
+    except:
+        return None
 
+def fmt(x):
+    if x is None:
+        return "--"
+    return str(round(x,1))
 
-def absolute_humidity(temp, hum):
-    return 6.112 * math.exp((17.67 * temp) / (temp + 243.5)) * hum * 2.1674 / (273.15 + temp)
+# -----------------------------
+# ANALISIS AMBIENTAL
+# -----------------------------
+def fase_dia():
+    h=time.localtime()[3]
+    if 5<=h<8: return "amanecer"
+    if 8<=h<12: return "mañana"
+    if 12<=h<17: return "tarde"
+    if 17<=h<20: return "atardecer"
+    if 20<=h<23: return "noche"
+    return "madrugada"
 
+BASE=[
+"Ambiente estable",
+"Clima interior equilibrado",
+"Microclima domestico OK",
+"Condiciones normales",
+"Lectura ambiental estable"
+]
 
-# --- main analysis ---
+def analisis_ambiental():
+    msgs=[]
+    
+    if temperatura_actual and temp_ext:
+        if temp_ext<temperatura_actual-2:
+            msgs.append("Exterior mas frio")
+        elif temp_ext>temperatura_actual+2:
+            msgs.append("Exterior mas calido")
 
-def environmental_analysis(temp_in, hum_in, temp_out, hum_out):
+    if humedad_actual:
+        if humedad_actual>70:
+            msgs.append("Humedad interior alta")
+        elif humedad_actual<35:
+            msgs.append("Ambiente seco")
 
-    hour = time.localtime()[3]
-    phase = phase_of_day(hour)
+    dp=dew_point(temperatura_actual,humedad_actual)
+    if dp:
+        if temperatura_actual-dp<2:
+            msgs.append("Condensacion posible")
 
-    messages = []
+    fase=fase_dia()
+    msgs.append("Momento: "+fase)
 
-    # temperature logic
-    if temp_out < temp_in - 2:
-        messages.append("Exterior mas frio")
-    if temp_out > temp_in + 2:
-        messages.append("Exterior mas calido")
+    msgs.append(BASE[now_epoch()%len(BASE)])
 
-    if abs(temp_out-temp_in) > 5:
-        messages.append("Dif termica alta")
+    return msgs[:3]
 
-    if temp_in < 18:
-        messages.append("Interior fresco")
-    elif temp_in > 26:
-        messages.append("Interior calido")
+# -----------------------------
+# SENSOR
+# -----------------------------
+def init_sensor():
+    global sensor
+    sensor=dht.DHT22(Pin(DHT_PIN))
 
-    # humidity logic
-    if hum_in > 70:
-        messages.append("Humedad alta")
-    elif hum_in < 35:
-        messages.append("Aire seco")
+def read_sensor():
+    global temperatura_actual,humedad_actual
+    try:
+        sensor.measure()
+        temperatura_actual=sensor.temperature()
+        humedad_actual=sensor.humidity()
+    except:
+        pass
 
-    if abs(hum_out-hum_in) > 15:
-        messages.append("Dif humedad")
+# -----------------------------
+# EXTERIOR SIMPLE (mock)
+# -----------------------------
+def fetch_weather_outside():
+    global temp_ext,hum_ext
+    # placeholder simple
+    temp_ext=18
+    hum_ext=70
 
-    # ventilation logic
-    if temp_out < temp_in and hum_out <= hum_in:
-        messages.append("Ventilar ayuda")
-    elif temp_out > temp_in and hum_out >= hum_in:
-        messages.append("Ventilar poco util")
+# -----------------------------
+# WEB
+# -----------------------------
+def style():
+    return """
+<style>
+body{font-family:Arial;background:#07111f;color:#eef4ff}
+.card{background:#0d1b2a;padding:14px;margin:10px;border-radius:12px}
+.big{font-size:28px;font-weight:bold}
+</style>
+"""
 
-    # dew point / condensation
-    dp = dew_point(temp_in, hum_in)
+def page_home():
+    analisis=analisis_ambiental()
+    txt="<br>".join(analisis)
 
-    if temp_in - dp > 5:
-        messages.append("Sin condensacion")
-    elif temp_in - dp > 2:
-        messages.append("Condensacion posible")
-    else:
-        messages.append("Condensacion probable")
+    return f"""
+<html>
+<head>{style()}</head>
+<body>
 
-    # mold risk
-    if hum_in > 75:
-        messages.append("Riesgo moho alto")
-    elif hum_in > 60:
-        messages.append("Riesgo moho medio")
-    else:
-        messages.append("Riesgo moho bajo")
+<div class='card'>
+<h2>{VERSION}</h2>
+IP monitor
+</div>
 
-    # comfort index
-    if 20 <= temp_in <= 24 and 40 <= hum_in <= 60:
-        messages.append("Confort ideal")
-    elif 18 <= temp_in <= 26:
-        messages.append("Confort aceptable")
-    else:
-        messages.append("Ambiente fresco" if temp_in < 20 else "Ambiente calido")
+<div class='card'>
+Interior<br>
+<div class='big'>{fmt(temperatura_actual)} °C</div>
+Humedad {fmt(humedad_actual)} %
+</div>
 
-    # phase message
-    phase_list = PHASE_MSG.get(phase, [])
-    if phase_list:
-        messages.append(phase_list[hour % len(phase_list)])
+<div class='card'>
+Exterior<br>
+<div class='big'>{fmt(temp_ext)} °C</div>
+Humedad {fmt(hum_ext)} %
+</div>
 
-    # baseline message
-    messages.append(BASE[hour % len(BASE)])
+<div class='card'>
+Analisis ambiental<br>
+<div class='big'>{txt}</div>
+</div>
 
-    return messages
+</body>
+</html>
+"""
 
+def respond(cl,body):
+    cl.send("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n")
+    cl.send(body)
 
-# Example usage
-if __name__ == "__main__":
+def init_server():
+    global server
+    addr=socket.getaddrinfo("0.0.0.0",80)[0][-1]
+    server=socket.socket()
+    server.bind(addr)
+    server.listen(5)
 
-    # Example sensor values
-    temp_in = 22
-    hum_in = 60
-    temp_out = 18
-    hum_out = 70
+def handle_web():
+    try:
+        cl,addr=server.accept()
+    except:
+        return
 
-    analysis = environmental_analysis(temp_in, hum_in, temp_out, hum_out)
+    req=cl.recv(1024)
+    respond(cl,page_home())
+    cl.close()
 
-    print("Analisis ambiental:")
-    for a in analysis[:4]:   # show only first few (for small screens)
-        print("-", a)
+# -----------------------------
+# ARRANQUE
+# -----------------------------
+init_sensor()
+fetch_weather_outside()
+init_server()
+
+while True:
+
+    read_sensor()
+    handle_web()
+
+    time.sleep(2)
