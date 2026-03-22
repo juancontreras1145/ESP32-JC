@@ -9,14 +9,14 @@ except:
     requests = None
 
 BASE_URL = "https://raw.githubusercontent.com/juancontreras1145/ESP32-JC/main/"
-
 FILES = [
     "main.py",
     "lcd.py",
     "updater.py",
 ]
-
 LOG_FILE = "update.log"
+CHUNK_SIZE = 512
+MIN_VALID_SIZE = 16
 
 
 def log(msg):
@@ -43,22 +43,6 @@ def lcd_msg(l1="", l2=""):
         pass
 
 
-def fetch_text(url):
-    if requests is None:
-        raise Exception("urequests no disponible")
-
-    r = requests.get(url)
-    try:
-        if r.status_code != 200:
-            raise Exception("HTTP {}".format(r.status_code))
-        return r.text
-    finally:
-        try:
-            r.close()
-        except:
-            pass
-
-
 def backup_name(filename):
     return filename + ".bak"
 
@@ -75,41 +59,136 @@ def remove_if_exists(filename):
         pass
 
 
-def safe_replace(filename, content):
+# Compatibilidad con distintas versiones/puertos de MicroPython
+# Algunos urequests exponen r.raw.read(), otros no.
+def _read_chunk(resp, size):
+    try:
+        return resp.raw.read(size)
+    except:
+        return None
+
+
+def download_to_temp(url, filename):
+    if requests is None:
+        raise Exception("urequests no disponible")
+
+    newf = temp_name(filename)
+    remove_if_exists(newf)
+
+    resp = None
+    total = 0
+    try:
+        resp = requests.get(url)
+        status = getattr(resp, "status_code", None)
+        if status != 200:
+            raise Exception("HTTP {}".format(status))
+
+        with open(newf, "wb") as f:
+            # Intento preferente: lectura por bloques desde socket/raw
+            used_stream = False
+            while True:
+                chunk = _read_chunk(resp, CHUNK_SIZE)
+                if chunk is None:
+                    break
+                used_stream = True
+                if not chunk:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8")
+                f.write(chunk)
+                total += len(chunk)
+                gc.collect()
+
+            # Fallback para puertos que no expongan raw.read()
+            if not used_stream:
+                data = None
+                try:
+                    data = resp.content
+                except:
+                    try:
+                        txt = resp.text
+                        data = txt.encode("utf-8")
+                    except:
+                        data = None
+
+                if data is None:
+                    raise Exception("sin contenido")
+
+                f.write(data)
+                total += len(data)
+                del data
+                gc.collect()
+
+        if total < MIN_VALID_SIZE:
+            raise Exception("archivo muy pequeno")
+
+        # Validacion simple: evitar grabar HTML/error en vez de .py
+        with open(newf, "rb") as f:
+            head = f.read(120)
+        low = head.lower()
+        if (b"<html" in low) or (b"<!doctype" in low):
+            raise Exception("respuesta HTML invalida")
+
+        return total
+    except:
+        remove_if_exists(newf)
+        raise
+    finally:
+        try:
+            if resp:
+                resp.close()
+        except:
+            pass
+
+
+def safe_commit(filename):
     newf = temp_name(filename)
     bakf = backup_name(filename)
 
-    remove_if_exists(newf)
-    remove_if_exists(bakf)
-
-    with open(newf, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    if filename in os.listdir():
-        os.rename(filename, bakf)
-
-    os.rename(newf, filename)
+    if newf not in os.listdir():
+        raise Exception("temp faltante")
 
     remove_if_exists(bakf)
+
+    had_old = filename in os.listdir()
+    if had_old:
+        try:
+            os.rename(filename, bakf)
+        except Exception as e:
+            raise Exception("backup fallo: {}".format(e))
+
+    try:
+        os.rename(newf, filename)
+        remove_if_exists(bakf)
+    except Exception as e:
+        # rollback
+        try:
+            remove_if_exists(filename)
+        except:
+            pass
+        try:
+            if bakf in os.listdir():
+                os.rename(bakf, filename)
+        except:
+            pass
+        try:
+            remove_if_exists(newf)
+        except:
+            pass
+        raise Exception("commit fallo: {}".format(e))
 
 
 def update_file(filename):
     url = BASE_URL + filename
     log("Descargando {}".format(filename))
     lcd_msg("Actualizando", filename)
-
-    content = fetch_text(url)
-
-    if not content or len(content) < 5:
-        raise Exception("archivo vacio o invalido")
-
-    safe_replace(filename, content)
-    log("OK {}".format(filename))
+    size = download_to_temp(url, filename)
+    safe_commit(filename)
+    log("OK {} ({} bytes)".format(filename, size))
 
 
 def update(reboot=False):
     gc.collect()
-
     ok = []
     fail = []
 
@@ -121,11 +200,13 @@ def update(reboot=False):
             update_file(f)
             ok.append(f)
             gc.collect()
-            time.sleep(0.3)
+            time.sleep(0.4)
         except Exception as e:
             msg = "{} -> {}".format(f, e)
             log("FAIL " + msg)
             fail.append(msg)
+            gc.collect()
+            time.sleep(0.4)
 
     if fail:
         lcd_msg("Update FAIL", str(len(fail)) + " errores")
@@ -144,5 +225,5 @@ def update(reboot=False):
 
     return {
         "ok": ok,
-        "fail": fail
+        "fail": fail,
     }
