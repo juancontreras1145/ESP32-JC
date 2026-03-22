@@ -202,9 +202,9 @@ def fmt1(x):
 
 def fmt1c(x):
     try:
-        return fmt1(x).replace(".", ",")
+        return fmt1(x)
     except:
-        return "--,-"
+        return "--.-"
 
 def fmt_int(x):
     if x is None:
