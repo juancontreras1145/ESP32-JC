@@ -15,7 +15,7 @@ import machine
 import ntptime
 from machine import Pin, I2C
 
-VERSION = "ESP32 JC Monitor v3"
+VERSION = "ESP32 JC Monitor v4"
 
 # -----------------------------
 # CONFIG
@@ -178,6 +178,12 @@ def fmt1(x):
         return "{:.1f}".format(float(x))
     except:
         return "--.-"
+
+def fmt1c(x):
+    try:
+        return fmt1(x).replace(".", ",")
+    except:
+        return "--,-"
 
 def fmt_int(x):
     if x is None:
@@ -432,7 +438,7 @@ def init_lcd():
         append_log("LCD init error: {}".format(e), "ERROR")
         return False
 
-def lcd_msg(l1="", l2="", pausa=0, centrado=False):
+def lcd_msg(l1="", l2="", pausa=0, centrado=False, scroll_row=None, scroll_delay=170, scroll_loops=1):
     global lcd_ok, lcd_error, contador_errores_lcd
 
     if not lcd_activo or lcd is None:
@@ -443,6 +449,17 @@ def lcd_msg(l1="", l2="", pausa=0, centrado=False):
             lcd.message_centered(str(l1), str(l2))
         else:
             lcd.message(str(l1), str(l2))
+
+        if scroll_row == 0 and len(str(l1)) > 16:
+            lcd.scroll_text(str(l1), row=0, delay_ms=scroll_delay, loops=scroll_loops)
+        elif scroll_row == 1 and len(str(l2)) > 16:
+            lcd.scroll_text(str(l2), row=1, delay_ms=scroll_delay, loops=scroll_loops)
+        elif scroll_row == 2:
+            if len(str(l1)) > 16:
+                lcd.scroll_text(str(l1), row=0, delay_ms=scroll_delay, loops=scroll_loops)
+            if len(str(l2)) > 16:
+                lcd.scroll_text(str(l2), row=1, delay_ms=scroll_delay, loops=scroll_loops)
+
         lcd_ok = True
         lcd_error = "Ninguno"
     except Exception as e:
@@ -782,7 +799,7 @@ def jornada_actual():
         h = 0
 
     if 5 <= h <= 7:
-        return "Amanecer"
+        return "Amaneciendo"
     if 8 <= h <= 11:
         return "Manana"
     if 12 <= h <= 14:
@@ -838,11 +855,14 @@ def sunrise_places_text(max_len=None):
     return txt
 
 def line_for_lcd(label, value, unit=""):
-    txt = "{} {}{}".format(label, fmt1(value), unit)
+    valor = fmt1c(value)
+    if unit and not str(unit).startswith(" ") and str(unit) != "%":
+        unit = " " + str(unit)
+    txt = "{} {}{}".format(label, valor, unit)
     if len(txt) <= 16:
         return txt
-    if "." in txt:
-        txt = "{} {}{}".format(label, fmt_int(value), unit)
+    valor = fmt_int(value)
+    txt = "{} {}{}".format(label, valor, unit)
     return clamp_text(txt, 16)
 
 def consejo_lcd(texto):
@@ -887,7 +907,7 @@ def construir_consejos():
             "Respira aire limpio y tranquilo",
             "Descanso primero, pantalla despues",
         ],
-        "Amanecer": [
+        "Amaneciendo": [
             "Empieza el dia con aire fresco",
             "Buena hora para ventilar breve",
             "Activa el cuerpo con calma",
@@ -1321,44 +1341,37 @@ def rotate_lcd(force=False):
     sunrise_places_cache = sunrise_places_text()
     jornada_cache = jornada_actual()
 
+    exterior_line = line_for_lcd("Exterior", temp_ext, "C")
+    hum_ext_line = line_for_lcd("Humedad", hum_ext, "%")
+    if temp_ext is None:
+        exterior_line = "Exterior s/dato"
+    if hum_ext is None:
+        hum_ext_line = "Humedad s/dato"
+
     screens = [
-        (line_for_lcd("Interior", temperatura_actual, "°"),
-         line_for_lcd("Humedad", humedad_actual, "%")),
-
-        (line_for_lcd("Exterior", temp_ext, "°"),
-         line_for_lcd("Humedad", hum_ext, "%")),
-
-        ("Confort",
-         clamp_text(comfort(temperatura_actual, humedad_actual), 16)),
-
-        ("Comparacion",
-         clamp_text(compare_inside_outside(), 16)),
-
-        ("Amanecer",
-         clamp_text(sunrise_label_cache, 16)),
-
-        ("Paises",
-         clamp_text(sunrise_places_cache, 16)),
-
-        ("Jornada",
-         clamp_text(jornada_cache, 16)),
-
-        ("Consejo",
-         consejo_lcd_cache),
-
-        ("Hora " + hora_texto()[:8],
-         clamp_text(wifi_ip, 16)),
+        {"l1": line_for_lcd("Interior", temperatura_actual, "C"), "l2": line_for_lcd("Humedad", humedad_actual, "%")},
+        {"l1": exterior_line, "l2": hum_ext_line},
+        {"l1": "Confort", "l2": comfort(temperatura_actual, humedad_actual), "center": True, "scroll": 1},
+        {"l1": "Comparacion", "l2": compare_inside_outside(), "center": True, "scroll": 1},
+        {"l1": "Amaneciendo", "l2": sunrise_places_cache, "center": True, "scroll": 1},
+        {"l1": "Jornada", "l2": jornada_cache, "center": True},
+        {"l1": "Consejo", "l2": ultimo_consejo, "center": True, "scroll": 1},
+        {"l1": "Hora " + hora_texto()[:8], "l2": wifi_ip, "scroll": 1},
     ]
 
     if indice_lcd >= len(screens):
         indice_lcd = 0
 
-    a, b = screens[indice_lcd]
-
-    if indice_lcd in (2, 3, 4, 5, 6, 7):
-        lcd_msg(a, b, 0, True)
-    else:
-        lcd_msg(a, b)
+    scr = screens[indice_lcd]
+    lcd_msg(
+        scr.get("l1", ""),
+        scr.get("l2", ""),
+        0,
+        scr.get("center", False),
+        scr.get("scroll", None),
+        160,
+        1
+    )
 
     indice_lcd += 1
     if indice_lcd >= len(screens):
