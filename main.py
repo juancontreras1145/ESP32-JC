@@ -1,7 +1,3 @@
-# =====================================
-# ESP32 JC - MAIN RESCATE MINIMO
-# =====================================
-
 import time
 import os
 import gc
@@ -19,7 +15,6 @@ inicio_epoch = time.time()
 wifi_ip = "Sin WiFi"
 server = None
 
-
 def log(msg):
     line = "[MAIN] {}".format(msg)
     print(line)
@@ -28,7 +23,6 @@ def log(msg):
             f.write(line + "\n")
     except:
         pass
-
 
 def uptime_texto():
     try:
@@ -39,7 +33,6 @@ def uptime_texto():
     m = (seg % 3600) // 60
     s = seg % 60
     return "{:02d}:{:02d}:{:02d}".format(h, m, s)
-
 
 def refresh_ip():
     global wifi_ip
@@ -52,7 +45,6 @@ def refresh_ip():
     except:
         wifi_ip = "Sin WiFi"
 
-
 def html_escape(s):
     try:
         s = str(s)
@@ -64,8 +56,7 @@ def html_escape(s):
     except:
         return ""
 
-
-def read_logs_tail(max_lines=80):
+def read_logs_tail(max_lines=60):
     try:
         if LOG_FILE not in os.listdir():
             return "Sin logs"
@@ -76,7 +67,6 @@ def read_logs_tail(max_lines=80):
         return "".join(lines)
     except Exception as e:
         return "Error leyendo log: {}".format(e)
-
 
 def list_files_text():
     out = []
@@ -92,7 +82,6 @@ def list_files_text():
     except Exception as e:
         out.append("Error listando archivos: {}".format(e))
     return "\n".join(out)
-
 
 def page_home():
     return """<!DOCTYPE html>
@@ -117,12 +106,10 @@ a { color:#8ec5ff; }
 <p><a href="/reset">Reiniciar</a></p>
 <p><a href="/ping">Ping</a></p>
 </div>
-
 <div class="card">
 <h2>Archivos</h2>
 <pre>%s</pre>
 </div>
-
 <div class="card">
 <h2>main.log</h2>
 <pre>%s</pre>
@@ -134,9 +121,8 @@ a { color:#8ec5ff; }
         html_escape(wifi_ip),
         html_escape(uptime_texto()),
         html_escape(list_files_text()),
-        html_escape(read_logs_tail(80)),
+        html_escape(read_logs_tail(60)),
     )
-
 
 def respond(cl, body, ctype="text/html; charset=utf-8", code="200 OK"):
     try:
@@ -144,7 +130,6 @@ def respond(cl, body, ctype="text/html; charset=utf-8", code="200 OK"):
             body_bytes = body
         else:
             body_bytes = body.encode("utf-8")
-
         headers = [
             "HTTP/1.0 {}".format(code),
             "Content-Type: {}".format(ctype),
@@ -157,7 +142,6 @@ def respond(cl, body, ctype="text/html; charset=utf-8", code="200 OK"):
     except Exception as e:
         log("respond error: {}".format(e))
 
-
 def route_path(req_text):
     try:
         line = req_text.split("\r\n")[0]
@@ -168,7 +152,6 @@ def route_path(req_text):
         pass
     return "/"
 
-
 def init_server():
     global server
     try:
@@ -178,20 +161,16 @@ def init_server():
         server.bind(addr)
         server.listen(2)
         server.settimeout(SERVER_TIMEOUT)
-        log("Servidor web listo en puerto {}".format(PORT))
+        log("Servidor web listo")
         return True
     except Exception as e:
         server = None
         log("Error iniciando servidor: {}".format(e))
         return False
 
-
 def handle_web():
-    global server
-
     if server is None:
         return
-
     try:
         cl, addr = server.accept()
     except OSError:
@@ -205,7 +184,6 @@ def handle_web():
         if not req:
             cl.close()
             return
-
         try:
             req_text = req.decode("utf-8")
         except:
@@ -234,7 +212,6 @@ def handle_web():
         cl.close()
     except:
         pass
-
 
 log("Inicio " + VERSION)
 gc.collect()
