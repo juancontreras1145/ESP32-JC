@@ -17,7 +17,7 @@ import machine
 import ntptime
 from machine import Pin, I2C
 
-VERSION = "ESP32 JC Monitor v81.1""
+VERSION = "ESP32 JC Monitor v82""
 
 # -----------------------------
 # CONFIG
