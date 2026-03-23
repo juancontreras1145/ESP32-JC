@@ -1,0 +1,18 @@
+
+VERSION = "ESP32 JC Monitor v1"
+
+LCD_SDA = 8
+LCD_SCL = 9
+LCD_ADDR = 0x27
+
+DHT_PIN = 4
+
+CSV_FILE = "temperaturas.csv"
+LOG_FILE = "main.log"
+
+INTERVALO_GUARDADO = 600
+INTERVALO_EXTERIOR = 1800
+
+LAT = -33.0475
+LON = -71.4425
+UBICACION = "Quilpue, Valparaiso"
