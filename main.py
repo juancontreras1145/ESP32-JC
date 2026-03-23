@@ -1,7 +1,7 @@
 import time
 import machine
 
-VERSION = "R1"
+VERSION = "v80"
 
 while True:
     time.sleep(1)
