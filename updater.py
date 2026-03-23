@@ -43,22 +43,6 @@ def lcd_msg(l1="", l2=""):
         pass
 
 
-def fetch_text(url):
-    if requests is None:
-        raise Exception("urequests no disponible")
-
-    r = requests.get(url)
-    try:
-        if r.status_code != 200:
-            raise Exception("HTTP {}".format(r.status_code))
-        return r.text
-    finally:
-        try:
-            r.close()
-        except:
-            pass
-
-
 def backup_name(filename):
     return filename + ".bak"
 
@@ -75,35 +59,90 @@ def remove_if_exists(filename):
         pass
 
 
-def safe_replace(filename, content):
-    newf = temp_name(filename)
-    bakf = backup_name(filename)
+def file_exists(filename):
+    try:
+        return filename in os.listdir()
+    except:
+        return False
 
-    remove_if_exists(newf)
-    remove_if_exists(bakf)
 
-    with open(newf, "w", encoding="utf-8") as f:
-        f.write(content)
+def read_head(filename, n=400):
+    try:
+        with open(filename, "r") as f:
+            return f.read(n)
+    except:
+        return ""
 
-    if filename in os.listdir():
-        os.rename(filename, bakf)
 
-    os.rename(newf, filename)
+def validate_file(filename):
+    head = read_head(filename, 400)
 
-    remove_if_exists(bakf)
+    if not head or len(head) < 10:
+        raise Exception("archivo vacio o corto")
+
+    if "<html" in head.lower() or "<!doctype" in head.lower():
+        raise Exception("respuesta HTML invalida")
+
+    if filename == "main.py":
+        if "VERSION =" not in head and "import time" not in head:
+            raise Exception("main.py invalido")
+
+    if filename == "lcd.py":
+        if "class LCD" not in head and "def " not in head:
+            raise Exception("lcd.py invalido")
+
+    if filename == "updater.py":
+        if "def update(" not in head and "BASE_URL =" not in head:
+            raise Exception("updater.py invalido")
+
+    return True
+
+
+def download_to_file(url, filename):
+    if requests is None:
+        raise Exception("urequests no disponible")
+
+    tmp = temp_name(filename)
+    bak = backup_name(filename)
+
+    remove_if_exists(tmp)
+
+    r = requests.get(url)
+    try:
+        if r.status_code != 200:
+            raise Exception("HTTP {}".format(r.status_code))
+
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = r.raw.read(512)
+                if not chunk:
+                    break
+                f.write(chunk)
+    finally:
+        try:
+            r.close()
+        except:
+            pass
+
+    validate_file(tmp)
+
+    remove_if_exists(bak)
+
+    if file_exists(filename):
+        os.rename(filename, bak)
+
+    os.rename(tmp, filename)
+    remove_if_exists(bak)
 
 
 def update_file(filename):
-    url = BASE_URL + filename
+    url = BASE_URL + filename + "?v={}".format(time.time())
     log("Descargando {}".format(filename))
     lcd_msg("Actualizando", filename)
 
-    content = fetch_text(url)
+    download_to_file(url, filename)
+    gc.collect()
 
-    if not content or len(content) < 5:
-        raise Exception("archivo vacio o invalido")
-
-    safe_replace(filename, content)
     log("OK {}".format(filename))
 
 
