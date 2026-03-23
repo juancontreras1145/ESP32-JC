@@ -876,23 +876,73 @@ def compare_inside_outside():
 
 def sunrise_region():
     try:
-        t_utc = time.gmtime(now_epoch())
-        h = t_utc[3]
+        utc = time.gmtime(now_epoch())
+        utc_h = utc[3]
+        utc_m = utc[4]
+        utc_now_min = utc_h * 60 + utc_m
     except:
-        h = 0
+        return "Sin datos"
 
-    zonas = [
-        "Pacifico", "Nueva Zelanda", "Australia", "Indonesia",
-        "China", "India", "Medio Oriente", "Europa",
-        "Africa", "Atlantico", "Sudamerica", "Pacifico",
+    # offset UTC en horas aproximado por país/región
+    paises = [
+        ("Nueva Zelanda", 13),
+        ("Australia Este", 10),
+        ("Japon", 9),
+        ("Corea del Sur", 9),
+        ("China", 8),
+        ("Filipinas", 8),
+        ("Tailandia", 7),
+        ("India", 5.5),
+        ("EAU", 4),
+        ("Turquia", 3),
+        ("Grecia", 2),
+        ("Italia", 1),
+        ("España", 1),
+        ("Reino Unido", 0),
+        ("Portugal", 0),
+        ("Marruecos", 0),
+        ("Brasil", -3),
+        ("Uruguay", -3),
+        ("Argentina", -3),
+        ("Chile", -3),
+        ("Paraguay", -3),
+        ("Bolivia", -4),
+        ("Venezuela", -4),
+        ("Republica Dominicana", -4),
+        ("Colombia", -5),
+        ("Peru", -5),
+        ("Ecuador", -5),
+        ("Mexico Centro", -6),
+        ("Mexico Pacifico", -7),
     ]
 
-    idx = int(h / 2)
-    if idx < 0:
-        idx = 0
-    if idx >= len(zonas):
-        idx = len(zonas) - 1
-    return zonas[idx]
+    amaneciendo = []
+
+    for nombre, offset in paises:
+        local_min = (utc_now_min + int(offset * 60)) % 1440
+
+        # ventana aproximada de amanecer: 05:30 a 07:30
+        if 330 <= local_min <= 450:
+            amaneciendo.append(nombre)
+
+    if amaneciendo:
+        return ", ".join(amaneciendo[:3])
+
+    # alternativa: mostrar quien está más cerca de amanecer
+    mejor_pais = None
+    mejor_diff = 9999
+    objetivo = 390  # 06:30
+
+    for nombre, offset in paises:
+        local_min = (utc_now_min + int(offset * 60)) % 1440
+        diff = abs(local_min - objetivo)
+        if diff > 720:
+            diff = 1440 - diff
+        if diff < mejor_diff:
+            mejor_diff = diff
+            mejor_pais = nombre
+
+    return "Cerca de amanecer: {}".format(mejor_pais)
 
 # -----------------------------
 # CSV
