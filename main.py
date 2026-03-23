@@ -1844,13 +1844,14 @@ lcd_msg("Clima + Sol", VERSION[-3:], PAUSA_LCD_BOOT, True)
 init_sensor()
 ensure_csv()
 refresh_ip()
+init_server()
 
 if wifi_conectado():
     sync_time_ntp()
     refresh_ip()
     fetch_weather_outside()
 
-init_server()
+
 
 lcd_msg("Web lista", safe_str(wifi_ip, 16), PAUSA_LCD_BOOT, True)
 
