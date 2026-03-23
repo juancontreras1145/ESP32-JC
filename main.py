@@ -1,194 +1,253 @@
-
-# =========================================
-# ESP32 JC - MAIN RECOVERY
-# =========================================
+# =====================================
+# ESP32 JC - MAIN RESCATE MINIMO
+# =====================================
 
 import time
-import socket
+import os
 import gc
-from machine import Pin, I2C
-import dht
+import socket
 import network
+import machine
 
-VERSION = "RECOVERY v1"
+VERSION = "ESP32 JC Rescue Main v1"
 
-LCD_SDA = 8
-LCD_SCL = 9
-LCD_ADDR = 0x27
-DHT_PIN = 4
+LOG_FILE = "main.log"
+PORT = 80
+SERVER_TIMEOUT = 1
 
-lcd = None
-sensor = None
+inicio_epoch = time.time()
 wifi_ip = "Sin WiFi"
+server = None
 
 
 def log(msg):
-    print("[RECOVERY]", msg)
-
-
-def init_lcd():
-    global lcd
-    from lcd import LCD
-    i2c = I2C(0, sda=Pin(LCD_SDA), scl=Pin(LCD_SCL))
-    lcd = LCD(i2c, LCD_ADDR, cols=16, rows=2)
+    line = "[MAIN] {}".format(msg)
+    print(line)
     try:
-        lcd.reinit()
+        with open(LOG_FILE, "a") as f:
+            f.write(line + "\n")
     except:
         pass
+
+
+def uptime_texto():
     try:
-        lcd.backlight_on()
+        seg = max(0, int(time.time() - inicio_epoch))
     except:
-        pass
-    lcd.clear()
+        seg = 0
+    h = seg // 3600
+    m = (seg % 3600) // 60
+    s = seg % 60
+    return "{:02d}:{:02d}:{:02d}".format(h, m, s)
 
 
-def lcd_msg(a="", b=""):
-    global lcd
-    if lcd is None:
-        return
-    try:
-        lcd.message(str(a), str(b))
-    except Exception as e:
-        print("LCD error:", e)
-
-
-def init_sensor():
-    global sensor
-    sensor = dht.DHT22(Pin(DHT_PIN))
-
-
-def get_wifi_ip():
+def refresh_ip():
+    global wifi_ip
     try:
         wlan = network.WLAN(network.STA_IF)
         if wlan.isconnected():
-            return wlan.ifconfig()[0]
+            wifi_ip = wlan.ifconfig()[0]
+        else:
+            wifi_ip = "Sin WiFi"
     except:
-        pass
-    return "Sin WiFi"
+        wifi_ip = "Sin WiFi"
 
 
-def leer_sensor():
-    global sensor
+def html_escape(s):
     try:
-        sensor.measure()
-        t = round(sensor.temperature(), 1)
-        h = round(sensor.humidity(), 1)
-        return t, h, None
+        s = str(s)
+        s = s.replace("&", "&amp;")
+        s = s.replace("<", "&lt;")
+        s = s.replace(">", "&gt;")
+        s = s.replace('"', "&quot;")
+        return s
+    except:
+        return ""
+
+
+def read_logs_tail(max_lines=80):
+    try:
+        if LOG_FILE not in os.listdir():
+            return "Sin logs"
+        with open(LOG_FILE, "r") as f:
+            lines = f.readlines()
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        return "".join(lines)
     except Exception as e:
-        return None, None, str(e)
+        return "Error leyendo log: {}".format(e)
 
 
-def html(ip, temp, hum, err):
+def list_files_text():
+    out = []
+    try:
+        items = os.listdir()
+        items.sort()
+        for name in items:
+            try:
+                size = os.stat(name)[6]
+            except:
+                size = 0
+            out.append("{} ({} bytes)".format(name, size))
+    except Exception as e:
+        out.append("Error listando archivos: {}".format(e))
+    return "\n".join(out)
+
+
+def page_home():
     return """<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="10">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Recovery ESP32</title>
+<title>ESP32 Rescue Main</title>
 <style>
-body {{
-    font-family: Arial, sans-serif;
-    background: #08111f;
-    color: #eef4ff;
-    padding: 16px;
-}}
-.card {{
-    background: #0d1b2a;
-    border: 1px solid #1f4f88;
-    border-radius: 16px;
-    padding: 16px;
-    margin-bottom: 16px;
-}}
-.big {{
-    font-size: 34px;
-    font-weight: bold;
-}}
+body { font-family: Arial; background:#08111f; color:#eef4ff; padding:16px; }
+.card { background:#0d1b2a; border:1px solid #1f4f88; border-radius:16px; padding:16px; margin-bottom:16px; }
+pre { background:#040b16; padding:12px; border-radius:10px; white-space:pre-wrap; overflow-wrap:break-word; }
+a { color:#8ec5ff; }
 </style>
 </head>
 <body>
 <div class="card">
-    <h1>ESP32 Recovery</h1>
-    <p>Version: {version}</p>
-    <p>IP: {ip}</p>
+<h1>ESP32 Rescue Main</h1>
+<p><b>Version:</b> %s</p>
+<p><b>IP:</b> %s</p>
+<p><b>Uptime:</b> %s</p>
+<p><a href="/reset">Reiniciar</a></p>
+<p><a href="/ping">Ping</a></p>
 </div>
 
 <div class="card">
-    <p>Temperatura</p>
-    <div class="big">{temp}</div>
+<h2>Archivos</h2>
+<pre>%s</pre>
 </div>
 
 <div class="card">
-    <p>Humedad</p>
-    <div class="big">{hum}</div>
-</div>
-
-<div class="card">
-    <p>Error</p>
-    <div>{err}</div>
+<h2>main.log</h2>
+<pre>%s</pre>
 </div>
 </body>
 </html>
-""".format(
-        version=VERSION,
-        ip=ip,
-        temp="--.- °C" if temp is None else "{} °C".format(temp),
-        hum="--.- %" if hum is None else "{} %".format(hum),
-        err="Ninguno" if err is None else err
+""" % (
+        html_escape(VERSION),
+        html_escape(wifi_ip),
+        html_escape(uptime_texto()),
+        html_escape(list_files_text()),
+        html_escape(read_logs_tail(80)),
     )
 
 
-log("Iniciando recovery")
+def respond(cl, body, ctype="text/html; charset=utf-8", code="200 OK"):
+    try:
+        if isinstance(body, bytes):
+            body_bytes = body
+        else:
+            body_bytes = body.encode("utf-8")
+
+        headers = [
+            "HTTP/1.0 {}".format(code),
+            "Content-Type: {}".format(ctype),
+            "Content-Length: {}".format(len(body_bytes)),
+            "Connection: close",
+        ]
+        cl.send("\r\n".join(headers))
+        cl.send("\r\n\r\n")
+        cl.send(body_bytes)
+    except Exception as e:
+        log("respond error: {}".format(e))
+
+
+def route_path(req_text):
+    try:
+        line = req_text.split("\r\n")[0]
+        parts = line.split(" ")
+        if len(parts) >= 2:
+            return parts[1]
+    except:
+        pass
+    return "/"
+
+
+def init_server():
+    global server
+    try:
+        addr = socket.getaddrinfo("0.0.0.0", PORT)[0][-1]
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(addr)
+        server.listen(2)
+        server.settimeout(SERVER_TIMEOUT)
+        log("Servidor web listo en puerto {}".format(PORT))
+        return True
+    except Exception as e:
+        server = None
+        log("Error iniciando servidor: {}".format(e))
+        return False
+
+
+def handle_web():
+    global server
+
+    if server is None:
+        return
+
+    try:
+        cl, addr = server.accept()
+    except OSError:
+        return
+    except Exception as e:
+        log("accept error: {}".format(e))
+        return
+
+    try:
+        req = cl.recv(1024)
+        if not req:
+            cl.close()
+            return
+
+        try:
+            req_text = req.decode("utf-8")
+        except:
+            req_text = str(req)
+
+        path = route_path(req_text)
+
+        if path == "/ping":
+            respond(cl, "OK: " + VERSION, ctype="text/plain; charset=utf-8")
+        elif path == "/reset":
+            respond(cl, "Reiniciando...", ctype="text/plain; charset=utf-8")
+            try:
+                cl.close()
+            except:
+                pass
+            time.sleep(1)
+            machine.reset()
+            return
+        else:
+            respond(cl, page_home())
+
+    except Exception as e:
+        log("handler error: {}".format(e))
+
+    try:
+        cl.close()
+    except:
+        pass
+
+
+log("Inicio " + VERSION)
 gc.collect()
-
-init_lcd()
-lcd_msg("ESP32 RECOVERY", VERSION)
-time.sleep(2)
-
-wifi_ip = get_wifi_ip()
-lcd_msg("WiFi", wifi_ip)
-time.sleep(2)
-
-init_sensor()
-lcd_msg("Sensor", "Inicializado")
-time.sleep(2)
-
-addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(addr)
-s.listen(2)
-s.settimeout(1)
-
-log("Servidor web listo")
-lcd_msg("Web lista", wifi_ip)
-time.sleep(2)
+refresh_ip()
+init_server()
+log("IP: {}".format(wifi_ip))
 
 while True:
     try:
         gc.collect()
-
-        wifi_ip = get_wifi_ip()
-        temp, hum, err = leer_sensor()
-
-        if err is None:
-            lcd_msg("T {}C".format(temp), "H {}%".format(hum))
-        else:
-            lcd_msg("Sensor error", str(err)[:16])
-
-        try:
-            cl, addr = s.accept()
-            req = cl.recv(1024)
-            body = html(wifi_ip, temp, hum, err)
-            cl.send("HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n")
-            cl.send(body)
-            cl.close()
-        except OSError:
-            pass
-
-        time.sleep(2)
-
+        refresh_ip()
+        handle_web()
+        time.sleep(0.2)
     except Exception as e:
-        log("Loop error: {}".format(e))
-        lcd_msg("Loop error", str(e)[:16])
-        time.sleep(2)
+        log("loop error: {}".format(e))
+        time.sleep(1)
